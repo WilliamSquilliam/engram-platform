@@ -1,0 +1,21 @@
+# Dev tooling config for the Engram Platform repo (lint + tests). Runtime deps live in
+# each service's requirements.txt; the cartridge IP is the `engram-cartridge` package.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+  "node_modules",
+  "**/__pycache__",
+  "**/alembic/versions",
+  "frontend",
+]
+
+[tool.ruff.lint]
+# F = pyflakes, I = import sort, E/W = pycodestyle, B = bugbear, UP = pyupgrade.
+select = ["F", "I", "E", "W", "B", "UP"]
+ignore = ["E501", "B008"]   # B008: FastAPI Depends() in defaults is idiomatic
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests", "ml_service"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

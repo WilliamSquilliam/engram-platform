@@ -1,0 +1,25 @@
+# runtime data + secrets
+.data/
+.tmp/
+*.log
+# env: ignore all real/local env files, keep only the committed *.example templates
+.env
+.env.*
+!.env.example
+!.env.aws.example
+
+# local demo helpers (self-described "not committed" — e.g. _seed_and_run.py).
+# Root-anchored so it never swallows package __init__.py files in subdirectories.
+/_*.py
+
+# python
+__pycache__/
+*.py[cod]
+
+# node / next
+node_modules/
+.next/
+frontend/node_modules/
+frontend/.next/
+frontend/next-env.d.ts
+*.tsbuildinfo

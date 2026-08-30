@@ -1,0 +1,25 @@
+# Control-plane API dependencies, pinned to the validated versions for
+# reproducible builds. For a fully hash-locked file, compile this with uv/pip-tools
+# (`uv pip compile`) in CI — these top-level pins are the source of truth.
+fastapi==0.135.3
+uvicorn[standard]==0.35.0
+sqlalchemy==2.0.50
+alembic==1.14.0          # schema migrations (replaces create_all/ad-hoc ALTER)
+pyjwt[crypto]==2.11.0    # [crypto] enables RS256/JWKS verification for OIDC/Keycloak
+python-multipart==0.0.20
+httpx==0.28.1
+pydantic==2.11.7
+python-dotenv==1.1.1     # loads .env.local / .env per-environment config
+# Google/Keycloak OIDC sign-in: Authlib runs the OAuth/OIDC dance; itsdangerous
+# signs the session cookie that carries OAuth state across the round-trip.
+authlib==1.6.8
+itsdangerous==2.2.0
+# psycopg is only used when DATABASE_URL points at Postgres (AWS / docker-compose).
+psycopg[binary]==3.2.3
+# Object storage (S3/MinIO) backend, used when PLATFORM_STORAGE_BACKEND=s3.
+boto3==1.35.76
+# Durable job queue (used when JOB_BACKEND=rq); Redis client + RQ worker.
+redis==5.2.1
+rq==2.1.0
+# Rate limiting for the auth endpoints (brute-force / abuse protection).
+slowapi==0.1.9

@@ -1,0 +1,207 @@
+// Tiny fetch wrapper around the control-plane API. Token in localStorage.
+import type {
+  AuthConfig,
+  ChatResponse,
+  CompareResult,
+  Corpus,
+  CostComparison,
+  Document,
+  Economics,
+  Job,
+  ScaleRun,
+  TokenResponse,
+  User,
+} from "./types";
+
+// Where the browser sends API calls. Local dev: backend on :8000. On AWS the
+// frontend and control-plane sit behind one internal ALB (path-routed), so set
+// NEXT_PUBLIC_API_URL="same-origin" at build time and we target window.location
+// .origin — the same host the app was loaded from (e.g. the SSM-tunnel localhost).
+const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL;
+export const API_URL =
+  RAW_API_URL === "same-origin"
+    ? (typeof window !== "undefined" ? window.location.origin : "")
+    : RAW_API_URL || "http://localhost:8000";
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("token");
+}
+export function setToken(t: string) {
+  localStorage.setItem("token", t);
+}
+export function clearToken() {
+  localStorage.removeItem("token");
+}
+
+// Cross-component sync: the sidebar and dashboard both render the corpus list
+// with independent state. Any mutation (create/delete/train) dispatches this so
+// every listener refetches — no global store needed.
+export const CORPORA_CHANGED = "corpora:changed";
+export function notifyCorporaChanged() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(CORPORA_CHANGED));
+}
+
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
+async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = { ...(opts.headers as Record<string, string>) };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${API_URL}${path}`, { ...opts, headers });
+  if (!res.ok) {
+    let msg: unknown = res.statusText;
+    try {
+      const j = await res.json();
+      msg = j.detail || msg;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  }
+  return (res.status === 204 ? null : await res.json()) as T;
+}
+
+export const api = {
+  register: (email: string, password: string, tenant_name: string) =>
+    req<TokenResponse>("/auth/register", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ email, password, tenant_name }),
+    }),
+  login: async (email: string, password: string): Promise<TokenResponse> => {
+    const form = new URLSearchParams();
+    form.set("username", email);
+    form.set("password", password);
+    const res = await fetch(`${API_URL}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form,
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.detail || "Login failed");
+    }
+    return res.json();
+  },
+  me: () => req<User>("/auth/me"),
+  listCorpora: () => req<Corpus[]>("/corpora"),
+  createCorpus: (name: string) =>
+    req<Corpus>("/corpora", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name }),
+    }),
+  getCorpus: (id: string) => req<Corpus>(`/corpora/${id}`),
+  deleteCorpus: (id: string) => req<null>(`/corpora/${id}`, { method: "DELETE" }),
+  listDocuments: (id: string) => req<Document[]>(`/corpora/${id}/documents`),
+  uploadDocuments: (id: string, files: File[]) => {
+    const fd = new FormData();
+    files.forEach((f) => {
+      // Preserve folder structure: react-dropzone sets `path`; a folder <input>
+      // sets `webkitRelativePath`. The backend sanitizes + nests on this key.
+      const withPath = f as File & { path?: string; webkitRelativePath?: string };
+      const rel = (withPath.path || withPath.webkitRelativePath || f.name).replace(/^[./]+/, "");
+      fd.append("files", f, rel);
+    });
+    return req<Document[]>(`/corpora/${id}/documents`, { method: "POST", body: fd });
+  },
+  train: (id: string) => req<Job>(`/corpora/${id}/train`, { method: "POST" }),
+  cancelTraining: (id: string) => req<Job>(`/corpora/${id}/cancel`, { method: "POST" }),
+  getJob: (jid: string) => req<Job>(`/jobs/${jid}`),
+  listJobs: (id: string) => req<Job[]>(`/corpora/${id}/jobs`),
+  chat: (id: string, question: string, k = 3) =>
+    req<ChatResponse>(`/corpora/${id}/chat`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ question, k }),
+    }),
+  // Side-by-side: cartridge alone / cart+RAG (floor) / adaptive / RAG (latency + modeled $/query).
+  // side lets the UI run the two answers sequentially (cart renders while rag still generates).
+  compare: (id: string, question: string, k = 3, queriesPerMonth = 100_000,
+            side: "both" | "cart" | "rag" = "both") =>
+    req<CompareResult>(`/corpora/${id}/compare?queries_per_month=${queriesPerMonth}&side=${side}`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ question, k }),
+    }),
+  // Per-corpus training cost + break-even.
+  economics: (id: string, queriesPerMonth = 100_000) =>
+    req<Economics>(`/corpora/${id}/economics?queries_per_month=${queriesPerMonth}`),
+  costComparison: (corpusTokens: number, queriesPerMonth: number) =>
+    req<CostComparison>(
+      `/metrics/cost-comparison?corpus_tokens=${corpusTokens}&queries_per_month=${queriesPerMonth}`
+    ),
+  // Token-streaming compare side (SSE over fetch — EventSource can't POST). Emits parsed
+  // events: {head, sources, used_docs} -> {delta} xN -> {done, metrics} -> {summary, cost_per_query}.
+  compareStream: async (
+    id: string, question: string, k: number, side: "cart" | "rag",
+    onEvent: (e: any) => void,
+    docIds?: string[],  // rag side: reuse the cart side's retrieval (one retrieval/question)
+  ) => {
+    const token = getToken();
+    const res = await fetch(`${API_URL}/corpora/${id}/compare/stream?side=${side}`, {
+      method: "POST",
+      headers: { ...JSON_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ question, k, ...(docIds?.length ? { doc_ids: docIds } : {}) }),
+    });
+    if (!res.ok || !res.body) throw new Error((await res.text()) || `stream failed (${res.status})`);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, i).trim();
+        buf = buf.slice(i + 2);
+        if (chunk.startsWith("data: ")) {
+          try { onEvent(JSON.parse(chunk.slice(6))); } catch { /* partial frame */ }
+        }
+      }
+    }
+  },
+  // Live scale test (SSE): the backend drives a real concurrency ramp against the GPU inside the
+  // VPC and streams one frame per level — {start,...} then {level, cart:{qps,ttft,lat,...}, rag:{...}}
+  // then {done}. onEvent fires per frame so the chart fills in live.
+  scaleTestStream: async (
+    id: string, queries: string[], maxConcurrency: number,
+    onEvent: (e: any) => void,
+  ) => {
+    const token = getToken();
+    const res = await fetch(`${API_URL}/corpora/${id}/scale-test/stream`, {
+      method: "POST",
+      headers: { ...JSON_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ queries, max_concurrency: maxConcurrency }),
+    });
+    if (!res.ok || !res.body) throw new Error((await res.text()) || `scale test failed (${res.status})`);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, i).trim();
+        buf = buf.slice(i + 2);
+        if (chunk.startsWith("data: ")) {
+          try { onEvent(JSON.parse(chunk.slice(6))); } catch { /* partial frame */ }
+        }
+      }
+    }
+  },
+  // Saved scale-test runs: persist a finished run + list past runs (newest first, points included).
+  saveScaleRun: (id: string, maxConcurrency: number, nQueries: number, points: any[]) =>
+    req<ScaleRun>(`/corpora/${id}/scale-runs`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ max_concurrency: maxConcurrency, n_queries: nQueries, points }),
+    }),
+  listScaleRuns: (id: string) => req<ScaleRun[]>(`/corpora/${id}/scale-runs`),
+  authConfig: () => req<AuthConfig>("/auth/config"),
+  googleLoginUrl: () => `${API_URL}/auth/google/login`,
+};

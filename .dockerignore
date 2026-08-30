@@ -1,0 +1,14 @@
+# Keep build context small + secrets out of images.
+**/__pycache__/
+**/*.pyc
+**/node_modules/
+**/.next/
+**/.pytest_cache/
+**/.ruff_cache/
+.data/
+.tmp/
+*.log
+.env
+backend/tests/
+frontend/node_modules/
+frontend/.next/

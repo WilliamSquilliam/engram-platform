@@ -1,0 +1,145 @@
+"""Domain model. Tenants own corpora; corpora hold documents and produce
+cartridges via training jobs. Multi-tenant isolation is enforced everywhere by
+filtering on tenant_id (see routers)."""
+import datetime
+import uuid
+
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .db import Base
+
+
+def _uuid() -> str:
+    return uuid.uuid4().hex
+
+
+def _now() -> datetime.datetime:
+    # Naive UTC (matches the existing DateTime columns) via the non-deprecated API.
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    hashed_password: Mapped[str] = mapped_column(String)
+    role: Mapped[str] = mapped_column(String, default="admin")
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+
+class Corpus(Base):
+    __tablename__ = "corpora"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String)
+    source_type: Mapped[str] = mapped_column(String, default="upload")  # upload|sharepoint|confluence
+    status: Mapped[str] = mapped_column(String, default="new")  # new|training|ready|failed
+    mcp_token: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Populated by the last successful training run; feeds the cost/break-even view.
+    n_cartridges: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    train_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    corpus_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+    documents: Mapped[list["Document"]] = relationship(back_populates="corpus", cascade="all, delete-orphan")
+    jobs: Mapped[list["Job"]] = relationship(back_populates="corpus", cascade="all, delete-orphan")
+    scale_runs: Mapped[list["ScaleRun"]] = relationship(back_populates="corpus", cascade="all, delete-orphan")
+
+
+class Document(Base):
+    __tablename__ = "documents"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    corpus_id: Mapped[str] = mapped_column(ForeignKey("corpora.id"), index=True)
+    filename: Mapped[str] = mapped_column(String)
+    storage_key: Mapped[str] = mapped_column(String)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+    corpus: Mapped["Corpus"] = relationship(back_populates="documents")
+
+
+class ScaleRun(Base):
+    """A completed fleet scale-test run, saved so the Scale Test tab can re-load past runs and
+    populate their finished numbers. `points` is the per-level series the SSE ramp produced
+    (list of {u, cart:{qps,ttft,lat,...}, rag:{...}}), stored verbatim as JSON."""
+    __tablename__ = "scale_runs"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    corpus_id: Mapped[str] = mapped_column(ForeignKey("corpora.id"), index=True)
+    max_concurrency: Mapped[int] = mapped_column(Integer)
+    n_queries: Mapped[int] = mapped_column(Integer, default=0)
+    points: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+    corpus: Mapped["Corpus"] = relationship(back_populates="scale_runs")
+
+
+class Measurement(Base):
+    """One measured per-query metric from the live serving path (see app/measurements.py). Each row
+    is ONE side of a head-to-head: `side` is "cart" (the resident-KV cartridge path) or "rag" (the
+    re-prefill baseline), both clocked on the same vLLM engine. Durable twin of the process-local ring
+    buffer, so the demo's measured aggregate + the /metrics/savings lifetime totals survive restarts.
+
+    Columns mirror the metrics dict record() receives from the Inference Service (latency_ms, ttft_ms,
+    prompt_tokens, resident_kv_tokens, gen_tokens, decode_tps, confidence); cost_per_query is the
+    length-normalized $/query computed at record time so lifetime aggregates don't re-derive pricing."""
+    __tablename__ = "measurements"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, index=True)
+    side: Mapped[str] = mapped_column(String, index=True)  # "cart" | "rag"
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ttft_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resident_kv_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gen_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    decode_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_per_query: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Deployment labels captured at record time (model / instance the number was measured on).
+    model_label: Mapped[str | None] = mapped_column(String, nullable=True)
+    instance_label: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class AuditEvent(Base):
+    """Append-only lifecycle receipt. Every data-affecting action (corpus.delete, carts.gc,
+    carts.offboard_failed) writes one row so a deletion is PROVABLE after the fact — the record a
+    security reviewer asks for when the privacy pitch ('deleting a memory removes the document from
+    serving') is challenged. `detail` holds compact JSON (which cart ids were deleted / retained as
+    shared / which ML-plane calls failed), so the row is self-contained without joining live state
+    that the delete already removed. tenant_id is indexed (the /audit read filters on it) and NON-null
+    for tenant-scoped events; the store-wide GC sweep isn't owned by a tenant, so it writes the
+    "_system" sentinel rather than a real tenant id."""
+    __tablename__ = "audit_events"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)  # "_system" for operator/GC events
+    user_id: Mapped[str | None] = mapped_column(String, nullable=True)  # None for non-user (worker/GC) actions
+    event: Mapped[str] = mapped_column(String, index=True)  # e.g. "corpus.delete" | "carts.gc" | "carts.offboard_failed"
+    corpus_id: Mapped[str | None] = mapped_column(String, nullable=True)  # nullable: not every event is corpus-scoped
+    detail: Mapped[str] = mapped_column(Text, default="")  # compact JSON payload (cart ids, errors, counts)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, index=True)
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    corpus_id: Mapped[str] = mapped_column(ForeignKey("corpora.id"), index=True)
+    kind: Mapped[str] = mapped_column(String, default="train")
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending|running|succeeded|failed|canceled
+    # Set by the user's "cancel training" action; the worker polls this via its
+    # progress-heartbeat response and aborts cooperatively (see routers/jobs.py).
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    progress: Mapped[float] = mapped_column(Float, default=0.0)  # 0.0..1.0, updated by worker heartbeats
+    eta_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)  # est. time remaining; None = unknown
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+    corpus: Mapped["Corpus"] = relationship(back_populates="jobs")

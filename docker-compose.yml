@@ -1,0 +1,93 @@
+# Real OSS stack — the AWS-shaped topology (Postgres+pgvector, MinIO/S3, Redis).
+# Maps to RDS/Aurora · S3 · ElastiCache · ECS/EKS. The native quickstart in
+# README.md is the path validated end-to-end; this needs a running Docker daemon.
+#
+#   docker compose up        # infra + backend + frontend
+# Run ml_service on a GPU host (it needs CUDA); it shares the `storage` volume.
+
+# Shared env for the API and the training worker (same image, different command).
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-cartridge}:${POSTGRES_PASSWORD:-cartridge}@postgres:5432/${POSTGRES_DB:-cartridge}
+  ML_SERVICE_URL: ${ML_SERVICE_URL:-http://host.docker.internal:8001}
+  BACKEND_INTERNAL_URL: http://backend:8000
+  PLATFORM_DATA_DIR: /data
+  PLATFORM_STORAGE_DIR: /data/storage
+  CORS_ORIGINS: http://localhost:3000
+  JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+  JOB_BACKEND: rq
+  REDIS_URL: redis://redis:6379/0
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cartridge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cartridge}
+      POSTGRES_DB: ${POSTGRES_DB:-cartridge}
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cartridge}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["miniodata:/data"]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  backend:
+    build: { context: ., dockerfile: backend/Dockerfile }
+    environment: *backend-env
+    ports: ["8000:8000"]
+    volumes: ["storage:/data/storage"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  # Durable training worker (JOB_BACKEND=rq): consumes the Redis queue so runs
+  # survive API restarts. Scale independently of the API on AWS.
+  worker:
+    build: { context: ., dockerfile: backend/Dockerfile }
+    command: ["python", "-m", "app.worker"]
+    environment: *backend-env
+    volumes: ["storage:/data/storage"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  frontend:
+    build: { context: ./frontend }
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports: ["3000:3000"]
+    depends_on: [backend]
+
+  # GPU host only (needs nvidia-container-toolkit). Otherwise run natively:
+  #   CARTRIDGES_MODEL=... uvicorn app:app --app-dir ml_service --port 8001
+  ml_service:
+    build: { context: ., dockerfile: ml_service/Dockerfile }
+    environment:
+      CARTRIDGES_MODEL: ${CARTRIDGES_MODEL:-Qwen/Qwen3-30B-A3B}
+      CARTRIDGES_DTYPE: ${CARTRIDGES_DTYPE:-bfloat16}
+    ports: ["8001:8001"]
+    volumes: ["storage:/data/storage"]
+    profiles: ["gpu"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: ["gpu"] }]
+
+volumes:
+  pgdata:
+  miniodata:
+  storage:

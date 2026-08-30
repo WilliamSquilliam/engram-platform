@@ -1,0 +1,27 @@
+# vLLM Inference Service — the resident-KV serving plane (the production serve path).
+#   docker build -f ml_service/Dockerfile.serve -t engram-ml-serve .   (context = repo root)
+#
+# Built ON the official vLLM 0.26 image so we inherit its exact CUDA + torch + transformers pins.
+# vLLM 0.26 ships transformers 5.14, which satisfies BOTH serving and onboarding — one env does
+# both, so there is no transformers<5 pin and no separate onboarding image split. We add only the
+# cartridge plug-in (engram-cartridge) + its S3 store + the FastAPI wrapper, then serve
+# vllm_inference:app.
+#
+# TAG: v0.26.0 follows the vllm-openai registry's `vX.Y.Z` scheme. Confirm the exact tag exists on
+# Docker Hub (vllm/vllm-openai) before a release build.
+# TODO(package): engram-cartridge is a pip dependency; install it from our index (or a wheel made
+# available to this build). The sibling `cartridges/` source no longer lives in this repo.
+FROM vllm/vllm-openai:v0.26.0
+WORKDIR /app
+
+# The plug-in + its S3 cart store ([s3]) + the onboarding extra ([build], transformers>=5.12).
+# Base deps (torch, transformers) are already satisfied by the vLLM image, so this doesn't
+# disturb vLLM's pinned CUDA stack. NB: the vllm-openai base image has python3 but no bare `python`.
+RUN pip install --no-cache-dir "engram-cartridge[s3,build]>=0.4.1" python-dotenv \
+ && python3 -c "import vllm, transformers, cartridges; print('vllm', vllm.__version__, 'transformers', transformers.__version__)"
+COPY ml_service ./ml_service
+
+# The base image's ENTRYPOINT is the OpenAI API server; replace it with our Inference Service.
+ENTRYPOINT []
+EXPOSE 8002
+CMD ["uvicorn", "vllm_inference:app", "--app-dir", "ml_service", "--host", "0.0.0.0", "--port", "8002"]

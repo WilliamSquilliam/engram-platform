@@ -1,0 +1,21 @@
+# Web layer for the ML service. The heavy ML deps (torch, transformers, safetensors,
+# numpy) come transitively from the engram-cartridge package (see its pyproject).
+fastapi==0.135.3
+uvicorn[standard]==0.35.0
+pydantic==2.11.7
+python-dotenv==1.1.1
+httpx==0.28.1   # posts training-progress heartbeats back to the control plane
+# The cartridge IP, consumed as a versioned package (decision: pip dependency).
+#   [s3]    -> boto3 for the S3CartridgeStore (durable cart tier)
+#   [build] -> transformers>=5.12 + accelerate for onboarding (build carts from docs)
+# Until it's published to our package index, install it editable from the sibling repo:
+#   pip install -e ../Engram-Smart-CAG
+engram-cartridge[s3,build]>=0.4.1
+# Fused retrieval (RETRIEVAL_BACKEND=fused): embedder + cross-encoder reranker.
+sentence-transformers>=3.0
+# FP8 onboarding (the 30B-FP8 menu tier): transformers' CompressedTensorsConfig
+# (run_compressed=False dequant, see app.py _fp8_dequant_kwargs) hard-requires this at
+# import. The v1.0.9 AMI shipped without it, so 30B onboarding failed on the very first
+# e2e with "ImportError: compressed-tensors>=0.15.0 is required" — serve was unaffected
+# (vLLM vendors its own FP8 path).
+compressed-tensors>=0.15.0
