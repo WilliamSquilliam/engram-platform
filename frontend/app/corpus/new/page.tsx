@@ -42,7 +42,7 @@ export default function NewCorpusPage() {
       </button>
       <h1 className="text-2xl font-semibold mt-2 mb-4">New Corpus</h1>
       <div className="mb-6">
-        <Stepper steps={["Name", "Upload", "Train"]} current={0} />
+        <Stepper steps={["Name", "Documents", "Model", "Review", "Onboard"]} current={0} />
       </div>
 
       <Card>

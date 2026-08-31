@@ -20,3 +20,49 @@ body {
 .progress-indeterminate {
   animation: progress-indeterminate 1.2s ease-in-out infinite;
 }
+
+/* Streaming caret: a soft blinking block appended while the model is still writing. */
+@keyframes caret-blink {
+  0%, 45% { opacity: 1; }
+  50%, 95% { opacity: 0; }
+  100% { opacity: 1; }
+}
+.stream-caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.5ch;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  border-radius: 1px;
+  animation: caret-blink 1s steps(1) infinite;
+}
+
+/* Chat message enter animation. */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.msg-in {
+  animation: msg-in 0.18s ease-out;
+}
+
+/* Lightweight markdown prose (the chat renderer targets these classes; no prose plugin). */
+.md > * + * { margin-top: 0.75rem; }
+.md h1, .md h2, .md h3 { font-weight: 600; line-height: 1.25; }
+.md h1 { font-size: 1.25rem; }
+.md h2 { font-size: 1.15rem; }
+.md h3 { font-size: 1.05rem; }
+.md ul { list-style: disc; padding-left: 1.4rem; }
+.md ol { list-style: decimal; padding-left: 1.4rem; }
+.md li + li { margin-top: 0.2rem; }
+.md a { color: #93c5fd; text-decoration: underline; }
+.md code { font-size: 0.85em; }
+.md blockquote {
+  border-left: 3px solid #334155;
+  padding-left: 0.75rem;
+  color: #94a3b8;
+}
+.md table { border-collapse: collapse; font-size: 0.9em; }
+.md th, .md td { border: 1px solid #334155; padding: 0.3rem 0.6rem; text-align: left; }
