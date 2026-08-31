@@ -15,20 +15,43 @@ import { useParams, useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
 import { api, getToken } from "@/lib/api";
 import { useTrainingJob, fmtClock } from "@/lib/useTrainingJob";
-import { Button, Card, CardBody, CardHeader, Input, Stepper, cn } from "@/components/ui";
-import type { Document, ModelTier, OnboardEstimate, OnboardingStep } from "@/lib/types";
+import { Badge, Button, Card, CardBody, CardHeader, Input, Stepper, cn } from "@/components/ui";
+import type {
+  Connector,
+  Document,
+  ModelTier,
+  OnboardEstimate,
+  OnboardingStep,
+  ParseStatus,
+} from "@/lib/types";
 
-const TEXT_RE = /\.(txt|md|markdown|text)$/i;
+// Accepted upload types (shared contract with the backend's parsers).
+const ACCEPTED_EXTS = [".txt", ".md", ".pdf", ".docx", ".html", ".htm"];
+const DOC_RE = /\.(txt|md|pdf|docx|html?)$/i;
+// The dropzone `accept` map (MIME -> extensions) react-dropzone filters against.
+const DROPZONE_ACCEPT: Record<string, string[]> = {
+  "text/plain": [".txt"],
+  "text/markdown": [".md"],
+  "application/pdf": [".pdf"],
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+  "text/html": [".html", ".htm"],
+};
 // The wizard's user-facing steps (the backend also has a terminal "ready").
 const STEP_LABELS = ["Name", "Documents", "Model", "Review", "Onboard"];
 const STEP_ORDER: OnboardingStep[] = ["name", "documents", "model", "review", "onboarding"];
 const stepIndex = (s: OnboardingStep) => Math.max(0, STEP_ORDER.indexOf(s === "ready" ? "onboarding" : s));
 
-// External connectors — not wired yet, shown so the roadmap is visible.
-const CONNECTORS = [
-  { key: "gdrive", label: "Google Drive" },
-  { key: "sharepoint", label: "SharePoint" },
-];
+// Poll the document list while any file is still parsing so rows transition
+// parsing -> parsed/failed without a manual refresh.
+const PARSE_POLL_MS = 2000;
+
+// Per-document parse-status badge: label + the Badge palette color to use.
+const PARSE_BADGE: Record<ParseStatus, { label: string; color: string }> = {
+  pending: { label: "Queued", color: "slate" },
+  parsing: { label: "Parsing…", color: "amber" },
+  parsed: { label: "Ready", color: "green" },
+  failed: { label: "Failed", color: "red" },
+};
 
 const fmtBytes = (n: number) => {
   if (n < 1024) return `${n} B`;
@@ -43,6 +66,7 @@ export default function OnboardingWizard() {
   const [corpus, setCorpus] = useState<any>(null);
   const [step, setStep] = useState<OnboardingStep>("name");
   const [docs, setDocs] = useState<Document[]>([]);
+  const [connectors, setConnectors] = useState<Connector[]>([]);
   const [tiers, setTiers] = useState<ModelTier[]>([]);
   const [defaultTier, setDefaultTier] = useState<string>("");
   const [selectedTier, setSelectedTier] = useState<string | null>(null);
@@ -69,14 +93,17 @@ export default function OnboardingWizard() {
 
   // Load the resumable snapshot + the model registry, and jump to the persisted step.
   const load = useCallback(async () => {
-    const [c, st, mt] = await Promise.all([
+    const [c, st, mt, cx] = await Promise.all([
       api.getCorpus(id),
       api.getOnboarding(id),
       api.modelTiers(),
+      // Connectors are a static registry; a failure shouldn't block the wizard.
+      api.connectors().catch(() => ({ connectors: [] })),
     ]);
     setCorpus(c);
     setName(c.name);
     setDocs(st.documents || []);
+    setConnectors(cx.connectors || []);
     setTiers(mt.tiers);
     setDefaultTier(mt.default_tier);
     setSelectedTier(st.model_tier ?? c.model_tier ?? null);
@@ -132,18 +159,18 @@ export default function OnboardingWizard() {
 
   // ---- Step 2: documents ----
   async function handleFiles(files: File[]) {
-    const texts = files.filter((f) => TEXT_RE.test((f as any).path || f.name));
-    const skipped = files.length - texts.length;
-    if (!texts.length) {
-      setNote(`No .txt/.md files found${skipped ? ` (skipped ${skipped})` : ""}.`);
+    const supported = files.filter((f) => DOC_RE.test((f as any).path || f.name));
+    const skipped = files.length - supported.length;
+    if (!supported.length) {
+      setNote(`No supported files found${skipped ? ` (skipped ${skipped})` : ""}. Accepts ${ACCEPTED_EXTS.join(" ")}.`);
       return;
     }
     setUploading(true);
     setNote("");
     try {
-      await api.uploadDocuments(id, texts);
+      await api.uploadDocuments(id, supported);
       setDocs(await api.listDocuments(id));
-      setNote(`Added ${texts.length} file${texts.length === 1 ? "" : "s"}${skipped ? `, skipped ${skipped} non-text` : ""}.`);
+      setNote(`Added ${supported.length} file${supported.length === 1 ? "" : "s"}${skipped ? `, skipped ${skipped} unsupported` : ""}.`);
     } catch (err: any) {
       setNote("Upload failed: " + err.message);
     } finally {
@@ -151,10 +178,26 @@ export default function OnboardingWizard() {
     }
   }
 
+  // Refresh the doc list while any file is still pending/parsing so its badge
+  // transitions to Ready/Failed on its own. Stops once every file has settled.
+  const parsing = docs.some((d) => d.parse_status === "pending" || d.parse_status === "parsing");
+  useEffect(() => {
+    if (step !== "documents" || !parsing) return;
+    const iv = setInterval(async () => {
+      try {
+        setDocs(await api.listDocuments(id));
+      } catch {
+        /* transient — keep polling */
+      }
+    }, PARSE_POLL_MS);
+    return () => clearInterval(iv);
+  }, [id, step, parsing]);
+
   const { getRootProps, getInputProps, open, isDragActive } = useDropzone({
     noClick: true,
     noKeyboard: true,
     multiple: true,
+    accept: DROPZONE_ACCEPT,
     onDrop: (accepted) => handleFiles(accepted),
   });
 
@@ -281,32 +324,68 @@ export default function OnboardingWizard() {
                 >
                   Select a folder
                 </button>{" "}
-                · .txt / .md
+                · {ACCEPTED_EXTS.join(" ")}
               </p>
               {note && <p data-testid="upload-note" className="mt-2 text-xs text-slate-400">{note}</p>}
             </div>
 
-            {/* External connectors — coming soon (disabled). */}
-            <div className="grid grid-cols-2 gap-2" data-testid="connectors">
-              {CONNECTORS.map((c) => (
-                <div
-                  key={c.key}
-                  className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 text-sm text-slate-400"
-                >
-                  <span>{c.label}</span>
-                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">Coming soon</span>
-                </div>
-              ))}
-            </div>
+            {/* Document-source connectors. filesystem is the upload above; external
+                connectors render as Connect buttons, disabled + "coming soon" until
+                available. Same styling as the unavailable model tiers for consistency. */}
+            {connectors.filter((c) => c.id !== "filesystem").length > 0 && (
+              <div className="grid grid-cols-2 gap-2" data-testid="connectors">
+                {connectors
+                  .filter((c) => c.id !== "filesystem")
+                  .map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      disabled={!c.available}
+                      data-testid={`connector-${c.id}`}
+                      title={c.available ? c.description : `${c.description} — coming soon`}
+                      className={cn(
+                        "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition",
+                        c.available
+                          ? "border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-600"
+                          : "cursor-not-allowed border-slate-800 bg-slate-900/50 text-slate-400 opacity-60"
+                      )}
+                    >
+                      <span>Connect {c.label}</span>
+                      {!c.available && (
+                        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
+                          Coming soon
+                        </span>
+                      )}
+                    </button>
+                  ))}
+              </div>
+            )}
 
             {docs.length > 0 && (
-              <ul data-testid="doc-list" className="max-h-40 divide-y divide-slate-800 overflow-y-auto text-sm">
-                {docs.map((d) => (
-                  <li key={d.id} className="flex justify-between gap-2 py-1">
-                    <span className="truncate" title={d.filename}>{d.filename}</span>
-                    <span className="shrink-0 text-slate-500">{fmtBytes(d.size)}</span>
-                  </li>
-                ))}
+              <ul data-testid="doc-list" className="max-h-48 divide-y divide-slate-800 overflow-y-auto text-sm">
+                {docs.map((d) => {
+                  const badge = d.parse_status ? PARSE_BADGE[d.parse_status] : null;
+                  return (
+                    <li key={d.id} className="py-1.5" data-testid={`doc-row-${d.id}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate" title={d.filename}>{d.filename}</span>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {badge && (
+                            <span data-testid={`doc-status-${d.id}`}>
+                              <Badge color={badge.color}>{badge.label}</Badge>
+                            </span>
+                          )}
+                          <span className="text-slate-500">{fmtBytes(d.size)}</span>
+                        </div>
+                      </div>
+                      {d.parse_status === "failed" && d.parse_error && (
+                        <p data-testid={`doc-error-${d.id}`} className="mt-0.5 truncate text-xs text-red-400" title={d.parse_error}>
+                          {d.parse_error}
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
 

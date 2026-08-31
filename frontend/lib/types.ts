@@ -25,13 +25,32 @@ export interface Corpus {
   created_at: string;
 }
 
+// Per-document parse lifecycle (shared contract with the backend): a freshly
+// uploaded file starts "pending"/"parsing" and settles on "parsed" or "failed".
+export type ParseStatus = "pending" | "parsing" | "parsed" | "failed";
+
 export interface Document {
   id: string;
   filename: string;
   size: number;
   // Per-document onboarding progress surfaced on wizard resume.
-  parse_status?: string;
+  parse_status?: ParseStatus;
+  // Human-readable reason a parse failed (only set when parse_status === "failed").
+  parse_error?: string;
   onboard_status?: string;
+}
+
+// A document-source connector (GET /connectors). `filesystem` is the built-in
+// upload; external ones (google_drive, sharepoint) render disabled with a
+// "coming soon" hint until their OAuth apps are configured (available=false).
+export interface Connector {
+  id: string;
+  label: string;
+  available: boolean;
+  description: string;
+}
+export interface ConnectorsResponse {
+  connectors: Connector[];
 }
 
 // The onboarding "choose model" step (GET /models). Tiers with available=false render but are
