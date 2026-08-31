@@ -8,10 +8,20 @@ from __future__ import annotations
 
 from .base import Connector, Document, SourceRef
 from .filesystem import FilesystemConnector
+from .google_drive import ConnectorNotConfigured, GoogleDriveConnector
+from .registry import (
+    ConnectorInfo, available_connectors, connector, connectors,
+)
+from .sharepoint import SharePointConnector
 
-#: source_type -> Connector class. New connectors register here.
+#: source_type -> Connector class. New connectors register here. The OAuth connectors are
+#: registered so the factory can construct them, but they gate themselves off at __init__
+#: (ConnectorNotConfigured) until creds are set — the product-facing availability is decided
+#: by the registry above (registry.connectors()), which GET /connectors serves.
 REGISTRY: dict[str, type[Connector]] = {
     FilesystemConnector.source_type: FilesystemConnector,
+    GoogleDriveConnector.source_type: GoogleDriveConnector,
+    SharePointConnector.source_type: SharePointConnector,
 }
 
 
@@ -27,5 +37,7 @@ def get_connector(source_type: str, **kwargs) -> Connector:
 
 __all__ = [
     "Connector", "Document", "SourceRef", "FilesystemConnector",
+    "GoogleDriveConnector", "SharePointConnector", "ConnectorNotConfigured",
+    "ConnectorInfo", "connectors", "connector", "available_connectors",
     "REGISTRY", "get_connector",
 ]

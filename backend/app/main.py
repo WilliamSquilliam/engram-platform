@@ -16,7 +16,8 @@ from .db import engine, init_db
 from .logging_config import setup_logging
 from .ratelimit import limiter
 from .routers import (
-    audit, auth, chat, compare, corpora, economics, jobs, metrics, model_tiers, onboarding,
+    audit, auth, chat, compare, connectors, corpora, economics, jobs, metrics, model_tiers,
+    onboarding,
 )
 
 setup_logging()
@@ -107,6 +108,7 @@ app.include_router(economics.router)
 app.include_router(metrics.router)
 app.include_router(audit.router)
 app.include_router(model_tiers.router)
+app.include_router(connectors.router)
 app.include_router(onboarding.router)
 
 

@@ -45,7 +45,27 @@ class LocalStorage:
         path.write_bytes(data)
         return str(path.relative_to(self.root)), len(data)
 
+    def _text_path(self, corpus_id: str, filename: str):
+        # Extracted-text sidecar lives in a parallel "text/" tree, same relative key + .txt.
+        # Keeping it OUT of "docs/" means the raw file stays downloadable and list_doc_filenames
+        # (which walks docs/) is unaffected.
+        return self.corpus_dir(corpus_id) / "text" / (safe_rel(filename) + ".txt")
+
+    def save_text(self, corpus_id: str, filename: str, text: str) -> None:
+        """Persist the parsed/extracted UTF-8 text for a document as a sidecar. read_text()
+        prefers this over decoding the raw bytes, so the onboard + retrieval paths consume
+        the EXTRACTED text (PDF/DOCX turned into words), never the raw binary."""
+        path = self._text_path(corpus_id, filename)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
     def read_text(self, corpus_id: str, filename: str) -> str:
+        # Prefer the extracted-text sidecar (parsing.extract_text output). Fall back to a
+        # lossy decode of the raw bytes for legacy documents uploaded before parsing existed,
+        # so an older corpus still onboards its plain-text files.
+        sidecar = self._text_path(corpus_id, filename)
+        if sidecar.exists():
+            return sidecar.read_text(encoding="utf-8")
         path = self.corpus_dir(corpus_id) / "docs" / safe_rel(filename)
         return path.read_bytes().decode("utf-8", errors="ignore")
 
@@ -74,15 +94,40 @@ class S3Storage(LocalStorage):
     def _key(self, corpus_id: str, rel: str) -> str:
         return f"corpora/{corpus_id}/docs/{rel}"
 
+    def _text_key(self, corpus_id: str, rel: str) -> str:
+        # Sidecar object key, parallel to _key but under text/ (mirrors _text_path locally).
+        return f"corpora/{corpus_id}/text/{rel}.txt"
+
     def save_document(self, corpus_id: str, filename: str, data: bytes) -> tuple[str, int]:
         key, size = super().save_document(corpus_id, filename, data)
         self._s3.put_object(Bucket=self.bucket, Key=self._key(corpus_id, safe_rel(filename)), Body=data)
         return key, size
 
+    def save_text(self, corpus_id: str, filename: str, text: str) -> None:
+        # Write the sidecar to the local mirror AND to S3 for durability, so a fresh worker
+        # (empty mirror) pulls the EXTRACTED text — not the raw PDF/DOCX bytes — in read_text.
+        super().save_text(corpus_id, filename, text)
+        self._s3.put_object(
+            Bucket=self.bucket, Key=self._text_key(corpus_id, safe_rel(filename)),
+            Body=text.encode("utf-8"),
+        )
+
     def read_text(self, corpus_id: str, filename: str) -> str:
-        local = self.corpus_dir(corpus_id) / "docs" / safe_rel(filename)
-        if not local.exists():  # mirror miss (e.g. fresh worker) -> pull from S3
-            obj = self._s3.get_object(Bucket=self.bucket, Key=self._key(corpus_id, safe_rel(filename)))
+        # Prefer the extracted-text sidecar (parity with LocalStorage). On a mirror miss pull
+        # the sidecar from S3; only fall back to the raw doc bytes when no sidecar exists
+        # (legacy pre-parsing document). A raw-bytes miss still pulls the doc so the decode works.
+        rel = safe_rel(filename)
+        sidecar = self._text_path(corpus_id, filename)
+        if not sidecar.exists():
+            try:
+                obj = self._s3.get_object(Bucket=self.bucket, Key=self._text_key(corpus_id, rel))
+                sidecar.parent.mkdir(parents=True, exist_ok=True)
+                sidecar.write_bytes(obj["Body"].read())
+            except self._s3.exceptions.NoSuchKey:
+                pass  # no sidecar (legacy doc) -> fall through to raw-bytes decode below
+        local = self.corpus_dir(corpus_id) / "docs" / rel
+        if not sidecar.exists() and not local.exists():  # legacy doc, mirror miss -> pull raw
+            obj = self._s3.get_object(Bucket=self.bucket, Key=self._key(corpus_id, rel))
             local.parent.mkdir(parents=True, exist_ok=True)
             local.write_bytes(obj["Body"].read())
         return super().read_text(corpus_id, filename)

@@ -9,6 +9,7 @@ from ..audit import record_event
 from ..config import MAX_REQUEST_MB, MAX_UPLOAD_MB
 from ..deps import get_current_user, get_db
 from ..models import Corpus, Document, User
+from ..parsing import SUPPORTED_EXTS, extract_text
 from ..retrieval import cart_id_for
 from ..schemas import CorpusCreateReq, CorpusResp, DocumentResp
 from ..storage import safe_rel, storage
@@ -35,7 +36,8 @@ def _to_resp(db: Session, c: Corpus) -> CorpusResp:
 
 def _doc_resp(d: Document) -> DocumentResp:
     return DocumentResp(id=d.id, filename=d.filename, size=d.size,
-                        parse_status=d.parse_status, onboard_status=d.onboard_status)
+                        parse_status=d.parse_status, parse_error=d.parse_error,
+                        onboard_status=d.onboard_status)
 
 
 def deletable_carts(db: Session, tenant_id: str, corpus_id: str,
@@ -186,7 +188,25 @@ async def upload_documents(
         # dedup check below matches what's actually on disk (and a missing
         # filename — allowed by multipart — can't crash the upload).
         fname = safe_rel(f.filename or "document.txt")
+        ext = ("." + fname.rsplit(".", 1)[-1].lower()) if "." in fname else ""
+        if ext not in SUPPORTED_EXTS:
+            # Reject an unsupported type at the edge (before storing) so we never keep raw
+            # bytes we can't onboard. The message lists what we DO accept.
+            raise HTTPException(
+                400,
+                f"{fname}: unsupported file type. Accepted: "
+                + " ".join(sorted(SUPPORTED_EXTS)),
+            )
+        # Keep the raw file (for download / re-parse), then extract text. The extracted
+        # text is persisted as a sidecar so the onboard + retrieval paths read WORDS, not
+        # raw PDF/DOCX bytes (storage.read_text prefers the sidecar). On FAILURE we write an
+        # EMPTY sidecar: read_text then returns "" (dropped by the onboard path's non-empty
+        # filter) instead of falling back to a lossy decode of the raw binary — a failed-parse
+        # document must never be onboarded as garbage bytes.
         key, size = storage.save_document(corpus.id, fname, data)
+        text, ok, parse_error = extract_text(fname, data)
+        storage.save_text(corpus.id, fname, text if ok else "")
+        parse_status = "parsed" if ok else "failed"
         # Idempotent on (corpus, path): re-dropping a folder updates docs in place
         # instead of creating duplicate rows.
         doc = (
@@ -195,10 +215,12 @@ async def upload_documents(
             .first()
         )
         if doc is None:
-            doc = Document(corpus_id=corpus.id, filename=fname, storage_key=key, size=size)
+            doc = Document(corpus_id=corpus.id, filename=fname, storage_key=key, size=size,
+                           parse_status=parse_status, parse_error=parse_error or None)
             db.add(doc)
         else:
             doc.storage_key, doc.size = key, size
+            doc.parse_status, doc.parse_error = parse_status, parse_error or None
         created.append(doc)
     # uploading new docs invalidates a previous "ready" state until retrained
     if corpus.status == "ready":

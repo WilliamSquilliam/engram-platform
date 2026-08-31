@@ -64,6 +64,9 @@ class DocumentResp(BaseModel):
     size: int
     # Per-document onboarding progress surfaced on wizard resume.
     parse_status: str = "pending"
+    # Short reason text extraction failed (unsupported type / encrypted / corrupt); null when
+    # parsing hasn't run or succeeded. Lets the wizard show WHY a file didn't onboard.
+    parse_error: str | None = None
     onboard_status: str = "pending"
 
 

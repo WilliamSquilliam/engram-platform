@@ -78,6 +78,23 @@ GOOGLE_REDIRECT_URI = os.environ.get(
 )
 GOOGLE_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 
+# --- source connectors (E2): OAuth creds gate a connector's availability ------
+# The connector registry (connectors/registry.py) mirrors serving.py: filesystem is always
+# available; google_drive and sharepoint render as "coming soon" (available=False) until their
+# OAuth app credentials are configured here. Setting both id+secret for a provider flips it on with
+# NO code change. OAuth is NOT implemented yet — these only gate the /connectors availability flag.
+# Google Drive reuses the Google OAuth client (GOOGLE_CLIENT_ID/SECRET) shared with Google sign-in.
+GDRIVE_CLIENT_ID = os.environ.get("GDRIVE_CLIENT_ID", GOOGLE_CLIENT_ID)
+GDRIVE_CLIENT_SECRET = os.environ.get("GDRIVE_CLIENT_SECRET", GOOGLE_CLIENT_SECRET)
+GDRIVE_ENABLED = bool(GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET)
+# SharePoint / Microsoft Graph: an Entra ID (Azure AD) app registration.
+SHAREPOINT_CLIENT_ID = os.environ.get("SHAREPOINT_CLIENT_ID", "")
+SHAREPOINT_CLIENT_SECRET = os.environ.get("SHAREPOINT_CLIENT_SECRET", "")
+SHAREPOINT_TENANT_ID = os.environ.get("SHAREPOINT_TENANT_ID", "")
+SHAREPOINT_ENABLED = bool(
+    SHAREPOINT_CLIENT_ID and SHAREPOINT_CLIENT_SECRET and SHAREPOINT_TENANT_ID
+)
+
 # --- auth backend: local JWT (default) or OIDC/JWKS (Keycloak/Cognito/...) -----
 # local: our /auth/register+login mint HS256 JWTs verified with JWT_SECRET.
 # oidc:  the IdP (e.g. Keycloak) issues RS256 JWTs; we verify them against its JWKS

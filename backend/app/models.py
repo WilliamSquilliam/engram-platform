@@ -75,6 +75,10 @@ class Document(Base):
     # Per-document onboarding progress the wizard surfaces on resume (a doc can still be parsing /
     # onboarding when the user reopens). Advanced by the onboard worker; independent of corpus.status.
     parse_status: Mapped[str] = mapped_column(String, default="pending")  # pending|parsing|parsed|failed
+    # Short human-readable reason a document failed text extraction (unsupported type, encrypted,
+    # corrupt); null when parsing hasn't run or succeeded. Surfaced in DocumentResp so the wizard
+    # can tell the user WHY a file didn't onboard.
+    parse_error: Mapped[str | None] = mapped_column(String, nullable=True)
     onboard_status: Mapped[str] = mapped_column(String, default="pending")  # pending|onboarding|ready|failed
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
