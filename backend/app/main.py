@@ -15,7 +15,9 @@ from . import config
 from .db import engine, init_db
 from .logging_config import setup_logging
 from .ratelimit import limiter
-from .routers import audit, auth, chat, compare, corpora, economics, jobs, metrics
+from .routers import (
+    audit, auth, chat, compare, corpora, economics, jobs, metrics, model_tiers, onboarding,
+)
 
 setup_logging()
 config.validate()  # fail fast on insecure prod config
@@ -104,6 +106,8 @@ app.include_router(compare.router)
 app.include_router(economics.router)
 app.include_router(metrics.router)
 app.include_router(audit.router)
+app.include_router(model_tiers.router)
+app.include_router(onboarding.router)
 
 
 @app.get("/health")

@@ -27,9 +27,15 @@ def get_owned_corpus(db: Session, user: User, corpus_id: str) -> Corpus:
 def _to_resp(db: Session, c: Corpus) -> CorpusResp:
     n = db.query(Document).filter(Document.corpus_id == c.id).count()
     return CorpusResp(id=c.id, name=c.name, source_type=c.source_type, status=c.status,
-                      n_documents=n, mcp_token=c.mcp_token,
+                      n_documents=n, onboarding_step=c.onboarding_step, model_tier=c.model_tier,
+                      mcp_token=c.mcp_token,
                       n_cartridges=c.n_cartridges, train_seconds=c.train_seconds,
                       corpus_tokens=c.corpus_tokens, created_at=c.created_at)
+
+
+def _doc_resp(d: Document) -> DocumentResp:
+    return DocumentResp(id=d.id, filename=d.filename, size=d.size,
+                        parse_status=d.parse_status, onboard_status=d.onboard_status)
 
 
 def deletable_slugs(db: Session, corpus_id: str, slugs: set[str]) -> tuple[list[str], set[str]]:
@@ -188,11 +194,11 @@ async def upload_documents(
     if corpus.status == "ready":
         corpus.status = "new"
     db.commit()
-    return [DocumentResp(id=d.id, filename=d.filename, size=d.size) for d in created]
+    return [_doc_resp(d) for d in created]
 
 
 @router.get("/{corpus_id}/documents", response_model=list[DocumentResp])
 def list_documents(corpus_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     corpus = get_owned_corpus(db, user, corpus_id)
     docs = db.query(Document).filter(Document.corpus_id == corpus.id).all()
-    return [DocumentResp(id=d.id, filename=d.filename, size=d.size) for d in docs]
+    return [_doc_resp(d) for d in docs]

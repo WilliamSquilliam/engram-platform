@@ -43,6 +43,16 @@ class Corpus(Base):
     name: Mapped[str] = mapped_column(String)
     source_type: Mapped[str] = mapped_column(String, default="upload")  # upload|sharepoint|confluence
     status: Mapped[str] = mapped_column(String, default="new")  # new|training|ready|failed
+    # Wizard CURSOR for the resumable per-corpus onboarding flow — where the user is in the 5-step
+    # wizard, so they can exit and reopen at the right step. Distinct from `status` (the corpus
+    # lifecycle): a corpus can sit at step "review" (status "new") or be mid-onboard (status
+    # "training"). Values: name|documents|model|review|onboarding|ready.
+    onboarding_step: Mapped[str] = mapped_column(String, default="name")
+    # Chosen model tier id (serving.tiers()); nullable until the user reaches the "model" step.
+    model_tier: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Resolved weights id the corpus is PINNED to (serving.model_ref_for_tier), set from the tier at
+    # onboard start so carts are stamped to a fixed model. Nullable until onboarding starts.
+    model_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     mcp_token: Mapped[str | None] = mapped_column(String, nullable=True)
     # Populated by the last successful training run; feeds the cost/break-even view.
     n_cartridges: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -62,6 +72,10 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String)
     storage_key: Mapped[str] = mapped_column(String)
     size: Mapped[int] = mapped_column(Integer, default=0)
+    # Per-document onboarding progress the wizard surfaces on resume (a doc can still be parsing /
+    # onboarding when the user reopens). Advanced by the onboard worker; independent of corpus.status.
+    parse_status: Mapped[str] = mapped_column(String, default="pending")  # pending|parsing|parsed|failed
+    onboard_status: Mapped[str] = mapped_column(String, default="pending")  # pending|onboarding|ready|failed
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
     corpus: Mapped["Corpus"] = relationship(back_populates="documents")

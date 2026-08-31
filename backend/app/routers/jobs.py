@@ -103,6 +103,10 @@ def _run_training(corpus_id: str, job_id: str) -> None:
                 # Worker aborted cooperatively after the user requested cancel.
                 # Corpus returns to "new" so it can be retrained from scratch.
                 corpus.status = "new"
+                # Onboarding wizard: a canceled onboard drops the cursor back to "review" so the
+                # user re-confirms and restarts (documents/tier selections are preserved).
+                if corpus.onboarding_step == "onboarding":
+                    corpus.onboarding_step = "review"
                 job.status = "canceled"
                 job.detail = "Training canceled"
                 job.eta_seconds = None
@@ -118,6 +122,15 @@ def _run_training(corpus_id: str, job_id: str) -> None:
                 return
             else:
                 corpus.status = "ready"
+                # Onboarding wizard: advance the cursor to the terminal "ready" step so a user who
+                # left the wizard reopens on the finished screen. Only advance an onboard that was
+                # actually in flight — a plain re-train (status path, no wizard) leaves it alone.
+                if corpus.onboarding_step == "onboarding":
+                    corpus.onboarding_step = "ready"
+                # Mark every document onboarded so per-file progress shows complete on resume.
+                for _d in db.query(Document).filter(Document.corpus_id == corpus_id):
+                    _d.parse_status = "parsed"
+                    _d.onboard_status = "ready"
                 if not corpus.mcp_token:
                     corpus.mcp_token = secrets.token_urlsafe(24)
                 # Persist timing/size from the run for the cost + break-even view.
@@ -154,12 +167,36 @@ def _run_training(corpus_id: str, job_id: str) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Training failed for corpus %s (job %s)", corpus_id, job_id)
             corpus.status = "failed"
+            # Onboarding wizard: a failed onboard returns the cursor to "review" so the user can
+            # inspect and retry (the "onboarding" step is transient, only valid while a run is live).
+            if corpus.onboarding_step == "onboarding":
+                corpus.onboarding_step = "review"
+                for _d in db.query(Document).filter(Document.corpus_id == corpus_id):
+                    _d.onboard_status = "failed"
             job.status = "failed"
             job.detail = str(exc)[:500]
             job.eta_seconds = None
         db.commit()
     finally:
         db.close()
+
+
+def dispatch_training(db: Session, background: BackgroundTasks, corpus: Corpus) -> Job:
+    """Flip the corpus to 'training', create the Job row, and enqueue the run via the configured job
+    backend. Single source of truth for job dispatch so the onboarding flow (routers/onboarding.py)
+    reuses the EXACT progress/cancel machinery instead of re-implementing it. Callers own the
+    tenant-scoping + document/precondition checks; this only starts the run.
+
+    Raises 409 if a run is already in flight (mirrors start_training's guard)."""
+    if corpus.status == "training":
+        raise HTTPException(409, "Training already in progress")
+    corpus.status = "training"
+    job = Job(corpus_id=corpus.id, kind="train", status="running", detail="Queued")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    jobqueue.enqueue_training(background, corpus.id, job.id)
+    return job
 
 
 @router.post("/corpora/{corpus_id}/train", response_model=JobResp)
@@ -176,15 +213,7 @@ def start_training(
         raise HTTPException(404, "Corpus not found")
     if not storage.list_doc_filenames(corpus_id):
         raise HTTPException(400, "Upload documents before training")
-    if corpus.status == "training":
-        raise HTTPException(409, "Training already in progress")
-    corpus.status = "training"
-    job = Job(corpus_id=corpus_id, kind="train", status="running", detail="Queued")
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    jobqueue.enqueue_training(background, corpus_id, job.id)
-    return _job_resp(job)
+    return _job_resp(dispatch_training(db, background, corpus))
 
 
 @router.post("/corpora/{corpus_id}/cancel", response_model=JobResp)

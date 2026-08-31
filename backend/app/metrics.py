@@ -132,6 +132,29 @@ def price_everyday() -> float:
     return cartridge_cost()
 
 
+# ---- onboarding estimate (review step, BEFORE any GPU run) -------------------
+# Coarse per-document constants for the wizard's "review" step — a pre-run sizing estimate, not a
+# measured number (measured timing/cost come from metrics above once a run completes). One obvious
+# place so a tweak updates every estimate. Env-overridable like the rest of this module.
+ONBOARD_SECONDS_PER_DOC = float(os.environ.get("ONBOARD_SECONDS_PER_DOC", "8.0"))   # est. GPU s / doc
+ONBOARD_CART_GB_PER_DOC = float(os.environ.get("ONBOARD_CART_GB_PER_DOC", "0.05"))  # est. cart storage / doc
+
+
+def onboard_estimate(n_documents: int) -> dict:
+    """Coarse pre-run sizing for the review step: estimated onboarding wall-clock + GPU $ from the
+    per-doc constants above x the on-demand GPU rate. Deliberately rough — the real figures land on
+    the corpus after the run (see /corpora/{id}/economics)."""
+    est_seconds = n_documents * ONBOARD_SECONDS_PER_DOC
+    est_cost = training_cost(est_seconds, GPU_HOURLY_ONDEMAND)
+    return {
+        "est_seconds": round(est_seconds, 1),
+        "est_cost_ondemand": round(est_cost, 4),
+        "est_cart_gb": round(n_documents * ONBOARD_CART_GB_PER_DOC, 3),
+        "gpu_hourly_ondemand": GPU_HOURLY_ONDEMAND,
+        "seconds_per_doc": ONBOARD_SECONDS_PER_DOC,
+    }
+
+
 def training_cost(train_seconds: float | None, gpu_hourly: float) -> float:
     """Training $ = measured GPU wall-clock x GPU $/hr."""
     return (train_seconds or 0.0) / 3600.0 * gpu_hourly

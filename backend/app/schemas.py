@@ -46,6 +46,10 @@ class CorpusResp(BaseModel):
     source_type: str
     status: str
     n_documents: int
+    # Resumable onboarding wizard: the step the user left off at + their chosen model tier, so the
+    # frontend reopens at the right place (see routers/onboarding.py).
+    onboarding_step: str = "name"
+    model_tier: str | None = None
     mcp_token: str | None = None
     # Populated after a successful training run (see Job._run_training).
     n_cartridges: int | None = None
@@ -58,6 +62,33 @@ class DocumentResp(BaseModel):
     id: str
     filename: str
     size: int
+    # Per-document onboarding progress surfaced on wizard resume.
+    parse_status: str = "pending"
+    onboard_status: str = "pending"
+
+
+# Wizard step values, single source of truth for validation.
+ONBOARDING_STEPS = ("name", "documents", "model", "review", "onboarding", "ready")
+
+
+class OnboardingPatchReq(BaseModel):
+    """Persist the wizard cursor and/or the chosen model tier. Both optional — the frontend PATCHes
+    whichever changed as the user moves through the steps. `model_tier` is validated against the
+    serving registry in the router (unknown ids are rejected there)."""
+    onboarding_step: str | None = Field(default=None, pattern="^(name|documents|model|review|onboarding|ready)$")
+    model_tier: str | None = None
+
+
+class OnboardingStateResp(BaseModel):
+    """The full resumable-onboarding snapshot: where the wizard is, the chosen tier, and per-document
+    parse/onboard status so the frontend can reopen at the exact step and show per-file progress."""
+    corpus_id: str
+    onboarding_step: str
+    status: str  # corpus lifecycle (new|training|ready|failed) — the wizard reads both
+    model_tier: str | None = None
+    model_ref: str | None = None
+    n_documents: int
+    documents: list[DocumentResp] = []
 
 
 class JobResp(BaseModel):
