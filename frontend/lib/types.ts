@@ -108,12 +108,39 @@ export interface User {
   id: string;
   email: string;
   tenant_id: string;
-  role: string;
+  // Tenant role: "admin" gates the Team section + all /admin endpoints. Everyone else is "member".
+  role: "admin" | "member" | string;
+  // True for Engram staff with cross-tenant/platform access (separate from tenant role).
+  platform_admin?: boolean;
 }
 
 export interface TokenResponse {
   access_token: string;
   token_type: string;
+}
+
+// --- Team management (tenant-admin) -------------------------------------------------------------
+// A tenant member as returned by GET /admin/members.
+export type MemberRole = "admin" | "member";
+export interface Member {
+  id: string;
+  email: string;
+  name: string | null;
+  role: MemberRole;
+  // "active" once they've accepted; "invited" while an invite is outstanding.
+  status?: "active" | "invited" | string;
+  created_at?: string;
+}
+
+// An outstanding invite returned by POST /admin/invites. `invite_link` is shown to copy
+// because outbound email may be gated off in some environments.
+export interface Invite {
+  id: string;
+  email: string;
+  role: MemberRole;
+  invite_link: string;
+  expires_at?: string;
+  created_at?: string;
 }
 
 export interface SourceRef {

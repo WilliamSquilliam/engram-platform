@@ -8,7 +8,8 @@ import Link from "next/link";
 import { api, getToken, clearToken, notifyCorporaChanged, CORPORA_CHANGED } from "@/lib/api";
 import { Button, cn } from "@/components/ui";
 
-const BARE = ["/login", "/demo", "/about"];
+// Full-screen auth + marketing pages render without the app chrome (no sidebar/top bar).
+const BARE = ["/login", "/demo", "/about", "/accept-invite", "/forgot-password", "/reset-password"];
 const STATUS_DOT: Record<string, string> = {
   new: "bg-slate-300",
   training: "bg-amber-400 animate-pulse",
@@ -121,6 +122,19 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
               )}
             </nav>
             <div className="space-y-0.5 border-t border-slate-800 p-2">
+              {/* Role-gated: only tenant admins see Team management. */}
+              {me?.role === "admin" && (
+                <Link
+                  href="/team"
+                  className={cn(
+                    "block rounded-md px-3 py-2 text-sm hover:bg-slate-800",
+                    pathname.startsWith("/team") ? "bg-slate-800 text-slate-100" : "text-slate-300"
+                  )}
+                  data-testid="team-link"
+                >
+                  Team
+                </Link>
+              )}
               <Link
                 href="/about"
                 className="block rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
