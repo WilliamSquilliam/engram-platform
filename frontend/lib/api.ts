@@ -3,6 +3,7 @@ import type {
   AuthConfig,
   ChatResponse,
   CompareResult,
+  ConnectorsResponse,
   Corpus,
   CostComparison,
   Document,
@@ -99,6 +100,9 @@ export const api = {
   getCorpus: (id: string) => req<Corpus>(`/corpora/${id}`),
   deleteCorpus: (id: string) => req<null>(`/corpora/${id}`, { method: "DELETE" }),
   listDocuments: (id: string) => req<Document[]>(`/corpora/${id}/documents`),
+  // Document-source connectors. `filesystem` is the built-in upload; external
+  // connectors report available=false until their OAuth apps are configured.
+  connectors: () => req<ConnectorsResponse>("/connectors"),
   uploadDocuments: (id: string, files: File[]) => {
     const fd = new FormData();
     files.forEach((f) => {
