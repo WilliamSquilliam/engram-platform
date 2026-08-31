@@ -50,37 +50,40 @@ def _last_frame(text: str) -> dict:
     return json.loads(text.strip().split("\n\n")[-1].removeprefix("data: "))
 
 
-def test_stream_head_deltas_done(client, auth, make_corpus, upload_doc, mock_ml, fake_engine, monkeypatch):
+def test_stream_head_deltas_done(client, auth, make_corpus, upload_doc, mock_ml, fake_engine,
+                                 monkeypatch, cart_id):
     """First turn: retrieves doc_ids, hits /query_stream, and emits head -> delta -> done."""
     headers, _ = auth
     cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    a = cart_id(cid)  # the tenant-namespaced id the first turn resolves (E6)
     _to_vllm(monkeypatch)
 
     r = client.post(f"/corpora/{cid}/chat/stream", json={"question": "what is alpha?"}, headers=headers)
     assert r.status_code == 200
     assert fake_engine["url"].endswith("/query_stream")
-    assert fake_engine["payload"]["doc_ids"] == ["a"]
+    assert fake_engine["payload"]["doc_ids"] == [a]
     head = json.loads(r.text.split("\n\n")[0].removeprefix("data: "))
     assert head["head"] is True
-    assert head["used_docs"] == ["a"] and head["sources"][0]["title"] == "Alpha Paper Title"
+    assert head["used_docs"] == [a] and head["sources"][0]["title"] == "Alpha Paper Title"
     assert '"delta"' in r.text
     done = _last_frame(r.text)
     assert done["done"] is True and done["metrics"]["tier"] == "cartridge"
 
 
 def test_stream_pins_doc_ids_skips_retrieval(client, auth, make_corpus, upload_doc,
-                                             mock_ml, fake_engine, monkeypatch):
+                                             mock_ml, fake_engine, monkeypatch, cart_id):
     """Follow-up turn echoes the first turn's doc_ids -> retrieval is skipped, ids reused verbatim."""
     headers, _ = auth
     cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    a = cart_id(cid)  # the namespaced id a real client re-pins from the head frame (E6)
     _to_vllm(monkeypatch)
     monkeypatch.setattr(retrieval, "retrieve",
-                        lambda *a, **k: pytest.fail("pinned turn must not retrieve"))
+                        lambda *args, **k: pytest.fail("pinned turn must not retrieve"))
 
     r = client.post(f"/corpora/{cid}/chat/stream",
-                    json={"question": "follow up?", "doc_ids": ["a"]}, headers=headers)
+                    json={"question": "follow up?", "doc_ids": [a]}, headers=headers)
     assert r.status_code == 200
-    assert fake_engine["payload"]["doc_ids"] == ["a"]
+    assert fake_engine["payload"]["doc_ids"] == [a]
 
 
 def test_stream_rejects_foreign_doc_ids(client, auth, make_corpus, upload_doc,
