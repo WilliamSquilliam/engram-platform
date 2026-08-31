@@ -3,6 +3,11 @@
 
 export type CorpusStatus = "new" | "training" | "ready" | "failed";
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "canceled";
+// The resumable onboarding wizard's 5 steps + the terminal "ready". Single source of truth
+// mirrors backend schemas.ONBOARDING_STEPS.
+export type OnboardingStep = "name" | "documents" | "model" | "review" | "onboarding" | "ready";
+export const ONBOARDING_STEPS: OnboardingStep[] =
+  ["name", "documents", "model", "review", "onboarding", "ready"];
 
 export interface Corpus {
   id: string;
@@ -10,6 +15,9 @@ export interface Corpus {
   source_type: string;
   status: CorpusStatus;
   n_documents: number;
+  // Resumable onboarding: the step the user left off at + their chosen model tier.
+  onboarding_step: OnboardingStep;
+  model_tier: string | null;
   mcp_token: string | null;
   n_cartridges: number | null;
   train_seconds: number | null;
@@ -21,6 +29,48 @@ export interface Document {
   id: string;
   filename: string;
   size: number;
+  // Per-document onboarding progress surfaced on wizard resume.
+  parse_status?: string;
+  onboard_status?: string;
+}
+
+// The onboarding "choose model" step (GET /models). Tiers with available=false render but are
+// not selectable — "coming soon".
+export interface ModelTier {
+  id: string;
+  label: string;
+  description: string;
+  precision: string;
+  context_tokens: number;
+  available: boolean;
+}
+export interface ModelTiers {
+  default_tier: string;
+  tiers: ModelTier[];
+}
+
+// The resumable-onboarding snapshot (GET /corpora/{id}/onboarding).
+export interface OnboardingState {
+  corpus_id: string;
+  onboarding_step: OnboardingStep;
+  status: CorpusStatus;
+  model_tier: string | null;
+  model_ref: string | null;
+  n_documents: number;
+  documents: Document[];
+}
+
+// The review step's pre-run sizing summary (GET /corpora/{id}/estimate).
+export interface OnboardEstimate {
+  n_documents: number;
+  total_bytes: number;
+  file_types: Record<string, number>;
+  model_tier: string | null;
+  est_seconds: number;
+  est_cost_ondemand: number;
+  est_cart_gb: number;
+  gpu_hourly_ondemand: number;
+  seconds_per_doc: number;
 }
 
 export interface Job {
@@ -47,9 +97,15 @@ export interface TokenResponse {
   token_type: string;
 }
 
+export interface SourceRef {
+  id: string;
+  title: string;
+}
+
 export interface ChatResponse {
   answer: string;
   used_docs: string[];
+  sources?: SourceRef[];
 }
 
 export type StrategyKey = "everyday" | "rag";

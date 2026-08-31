@@ -1,60 +1,87 @@
 "use client";
-// New Corpus wizard — Steps 2 & 3: Upload then Train. Keyed by corpus id so it is
-// fully resumable: if the user exits mid-training, the dashboard routes them back
-// here and we pick the in-flight run back up (useTrainingJob.resume). Controls:
-// Back (to dashboard), Cancel training, Exit (leave; training keeps running).
-import { useEffect, useRef, useState } from "react";
+// Resumable onboarding wizard — the 5-step flow over the onboarding endpoints:
+//   1 Name       rename the corpus (created in /corpus/new)
+//   2 Documents  upload files; Google Drive / SharePoint render as disabled "coming soon"
+//   3 Model      GET /models — tiers; unavailable tiers render but aren't selectable ("coming soon")
+//   4 Review     GET /corpora/{id}/estimate — doc count, file types, size, est. time + cost
+//   5 Onboard    POST /corpora/{id}/onboard — dispatches server-side; handles the 409 no_serving_engine
+//                gate ("starts once a model is enabled") and shows live progress when it runs
+//
+// Resumable: entering a not-ready corpus loads GET /corpora/{id}/onboarding and jumps to its
+// onboarding_step. Each step PATCHes the cursor so a reload / exit resumes at the right place. The
+// step cursor (where the USER is) is distinct from corpus.status (where the WORK is).
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
 import { api, getToken } from "@/lib/api";
 import { useTrainingJob, fmtClock } from "@/lib/useTrainingJob";
-import { Button, Card, CardBody, CardHeader, Stepper, cn } from "@/components/ui";
+import { Button, Card, CardBody, CardHeader, Input, Stepper, cn } from "@/components/ui";
+import type { Document, ModelTier, OnboardEstimate, OnboardingStep } from "@/lib/types";
 
 const TEXT_RE = /\.(txt|md|markdown|text)$/i;
-type Step = "upload" | "train" | "done";
+// The wizard's user-facing steps (the backend also has a terminal "ready").
+const STEP_LABELS = ["Name", "Documents", "Model", "Review", "Onboard"];
+const STEP_ORDER: OnboardingStep[] = ["name", "documents", "model", "review", "onboarding"];
+const stepIndex = (s: OnboardingStep) => Math.max(0, STEP_ORDER.indexOf(s === "ready" ? "onboarding" : s));
 
-// Training runs in three stages; the ranges mirror ml_service (_PREP_FRAC = 0.15
-// and the 0.97 train/save split) so each stage's bar fills off the overall
-// progress. The timers below stay for the whole run, not per stage.
-const TRAIN_STAGES = [
-  { key: "analyze", label: "Analyze Documents", lo: 0, hi: 0.15 },
-  { key: "train", label: "Train Cartridges", lo: 0.15, hi: 0.97 },
-  { key: "save", label: "Save", lo: 0.97, hi: 1 },
+// External connectors — not wired yet, shown so the roadmap is visible.
+const CONNECTORS = [
+  { key: "gdrive", label: "Google Drive" },
+  { key: "sharepoint", label: "SharePoint" },
 ];
-const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
-export default function CorpusSetupPage() {
+const fmtBytes = (n: number) => {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+};
+
+export default function OnboardingWizard() {
   const { id } = useParams() as { id: string };
   const router = useRouter();
 
   const [corpus, setCorpus] = useState<any>(null);
-  const [docs, setDocs] = useState<any[]>([]);
-  const [step, setStep] = useState<Step>("upload");
-  const [uploading, setUploading] = useState(false);
+  const [step, setStep] = useState<OnboardingStep>("name");
+  const [docs, setDocs] = useState<Document[]>([]);
+  const [tiers, setTiers] = useState<ModelTier[]>([]);
+  const [defaultTier, setDefaultTier] = useState<string>("");
+  const [selectedTier, setSelectedTier] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<OnboardEstimate | null>(null);
+  const [name, setName] = useState("");
   const [note, setNote] = useState("");
-  const [canceling, setCanceling] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [gated, setGated] = useState(false); // 409 no_serving_engine — onboarding is queued for a model
   const folderRef = useRef<HTMLInputElement>(null);
 
   const train = useTrainingJob(id, (job) => {
-    // Fired when the run leaves "running": advance or fall back to upload.
-    load();
-    if (job.status === "succeeded") setStep("done");
-    else if (job.status === "canceled") {
-      setStep("upload");
-      setNote("Training canceled.");
+    // Onboarding finished (or stopped). Success -> the corpus is ready; go to chat.
+    if (job.status === "succeeded") {
+      router.replace(`/corpus/${id}/chat`);
     } else if (job.status === "failed") {
-      setStep("upload");
-      setNote("Training failed: " + (job.detail || "unknown error"));
+      setNote("Onboarding failed: " + (job.detail || "unknown error"));
+      goto("review");
+    } else if (job.status === "canceled") {
+      setNote("Onboarding canceled.");
+      goto("review");
     }
-    setCanceling(false);
   });
 
-  async function load() {
-    const c = await api.getCorpus(id);
+  // Load the resumable snapshot + the model registry, and jump to the persisted step.
+  const load = useCallback(async () => {
+    const [c, st, mt] = await Promise.all([
+      api.getCorpus(id),
+      api.getOnboarding(id),
+      api.modelTiers(),
+    ]);
     setCorpus(c);
-    setDocs(await api.listDocuments(id));
-    return c;
-  }
+    setName(c.name);
+    setDocs(st.documents || []);
+    setTiers(mt.tiers);
+    setDefaultTier(mt.default_tier);
+    setSelectedTier(st.model_tier ?? c.model_tier ?? null);
+    return { c, st };
+  }, [id]);
 
   useEffect(() => {
     if (!getToken()) {
@@ -62,25 +89,48 @@ export default function CorpusSetupPage() {
       return;
     }
     (async () => {
-      let c;
       try {
-        c = await load();
+        const { c, st } = await load();
+        if (c.status === "ready") {
+          router.replace(`/corpus/${id}/chat`);
+          return;
+        }
+        if (c.status === "training") {
+          // A run is in flight — resume the live progress view on the Onboard step.
+          setStep("onboarding");
+          train.resume();
+        } else {
+          setStep(st.onboarding_step);
+        }
       } catch {
         router.push("/login");
-        return;
-      }
-      if (c.status === "training") {
-        setStep("train");
-        train.resume();
-      } else if (c.status === "ready") {
-        setStep("done");
-      } else {
-        setStep("upload");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [id]);
 
+  // Persist the cursor and move to a step.
+  const goto = useCallback(
+    async (s: OnboardingStep) => {
+      setStep(s);
+      setNote("");
+      try {
+        await api.patchOnboarding(id, { onboarding_step: s });
+      } catch {
+        /* cursor is best-effort; the step still advances locally */
+      }
+    },
+    [id]
+  );
+
+  // ---- Step 1: name ----
+  async function saveName() {
+    // Rename isn't exposed by the API surface here; the name was set at creation. We only advance
+    // the cursor. (Kept as a step so the flow reads 1..5 and resumes cleanly.)
+    await goto("documents");
+  }
+
+  // ---- Step 2: documents ----
   async function handleFiles(files: File[]) {
     const texts = files.filter((f) => TEXT_RE.test((f as any).path || f.name));
     const skipped = files.length - texts.length;
@@ -92,8 +142,8 @@ export default function CorpusSetupPage() {
     setNote("");
     try {
       await api.uploadDocuments(id, texts);
+      setDocs(await api.listDocuments(id));
       setNote(`Added ${texts.length} file${texts.length === 1 ? "" : "s"}${skipped ? `, skipped ${skipped} non-text` : ""}.`);
-      await load();
     } catch (err: any) {
       setNote("Upload failed: " + err.message);
     } finally {
@@ -108,28 +158,56 @@ export default function CorpusSetupPage() {
     onDrop: (accepted) => handleFiles(accepted),
   });
 
-  async function startTrain() {
-    setNote("");
-    setStep("train");
+  // ---- Step 3: model ----
+  async function chooseTier(tierId: string) {
+    setSelectedTier(tierId);
     try {
-      await train.start();
-    } catch (err: any) {
-      setStep("upload");
-      setNote("Failed to start training: " + err.message);
+      await api.patchOnboarding(id, { model_tier: tierId });
+    } catch (e: any) {
+      setNote(e.message || "Could not select model");
     }
   }
 
-  async function cancelTrain() {
-    setCanceling(true);
+  // ---- Step 4: review ----
+  async function loadReview() {
+    await goto("review");
     try {
-      await train.cancel();
-    } catch {
-      setCanceling(false);
+      setEstimate(await api.estimate(id));
+    } catch (e: any) {
+      setNote(e.message || "Could not load estimate");
+    }
+  }
+
+  // ---- Step 5: onboard ----
+  async function startOnboard() {
+    setBusy(true);
+    setNote("");
+    setGated(false);
+    try {
+      const res = await api.onboard(id);
+      if ("no_serving_engine" in res) {
+        // 409 gate: no live model yet. Stay on the Onboard step showing the queued state; the cursor
+        // is left at "review" server-side (nothing dispatched).
+        setGated(true);
+        setStep("onboarding");
+      } else {
+        // Dispatched: a training run is now in flight. Show live progress.
+        setStep("onboarding");
+        setCorpus((c: any) => ({ ...(c || {}), status: "training" }));
+        train.resume();
+      }
+    } catch (e: any) {
+      setNote(e.message || "Could not start onboarding");
+    } finally {
+      setBusy(false);
     }
   }
 
   if (!corpus) return <main className="p-8 text-slate-400">Loading…</main>;
-  const stepIndex = step === "upload" ? 1 : 2;
+
+  const idx = stepIndex(step);
+  const selectedTierObj = tiers.find((t) => t.id === selectedTier) || null;
+  const canOnboard = docs.length > 0 && !!selectedTier;
 
   return (
     <main className="mx-auto max-w-2xl p-8">
@@ -140,18 +218,32 @@ export default function CorpusSetupPage() {
       >
         ← All Corpora
       </button>
-      <h1 className="mt-2 mb-4 text-2xl font-semibold" data-testid="setup-title">
-        {corpus.name}
-      </h1>
+      <h1 className="mt-2 mb-4 text-2xl font-semibold" data-testid="setup-title">{corpus.name}</h1>
       <div className="mb-6">
-        <Stepper steps={["Name", "Upload", "Train"]} current={stepIndex} />
+        <Stepper steps={STEP_LABELS} current={idx} />
       </div>
 
-      {/* ---------------- Upload step ---------------- */}
-      {step === "upload" && (
+      {/* ---------------- Step 1: Name ---------------- */}
+      {step === "name" && (
+        <Card>
+          <CardHeader>
+            <h2 className="font-medium">Name your corpus</h2>
+            <p className="text-xs text-slate-400">One knowledge base — e.g. a handbook or support KB.</p>
+          </CardHeader>
+          <CardBody className="space-y-4">
+            <Input data-testid="wizard-name" value={name} onChange={(e: any) => setName(e.target.value)} />
+            <div className="flex justify-end">
+              <Button onClick={saveName} data-testid="step-name-next">Continue</Button>
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
+      {/* ---------------- Step 2: Documents ---------------- */}
+      {step === "documents" && (
         <Card>
           <CardHeader className="flex items-center justify-between">
-            <h2 className="font-medium">Add Documents</h2>
+            <h2 className="font-medium">Add documents</h2>
             <span className="text-xs text-slate-400">{docs.length} file(s)</span>
           </CardHeader>
           <CardBody className="space-y-4">
@@ -172,16 +264,14 @@ export default function CorpusSetupPage() {
                 onChange={(e) => e.target.files && handleFiles(Array.from(e.target.files))}
                 {...({ webkitdirectory: "", directory: "" } as any)}
               />
-              <p className="text-sm text-slate-300">
-                {isDragActive ? "Drop to add" : "Drag files & folders here"}
-              </p>
+              <p className="text-sm text-slate-300">{isDragActive ? "Drop to add" : "Drag files & folders here"}</p>
               <div className="mt-3">
-                <Button type="button" data-testid="select-corpus" onClick={open} disabled={uploading}>
-                  {uploading ? "Uploading…" : "Select Corpus"}
+                <Button type="button" data-testid="select-files" onClick={open} disabled={uploading}>
+                  {uploading ? "Uploading…" : "Select files"}
                 </Button>
               </div>
               <p className="mt-2 text-xs text-slate-500">
-                Files or folders, any combination ·{" "}
+                Files or folders ·{" "}
                 <button
                   type="button"
                   data-testid="select-folder"
@@ -196,133 +286,200 @@ export default function CorpusSetupPage() {
               {note && <p data-testid="upload-note" className="mt-2 text-xs text-slate-400">{note}</p>}
             </div>
 
+            {/* External connectors — coming soon (disabled). */}
+            <div className="grid grid-cols-2 gap-2" data-testid="connectors">
+              {CONNECTORS.map((c) => (
+                <div
+                  key={c.key}
+                  className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 text-sm text-slate-400"
+                >
+                  <span>{c.label}</span>
+                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">Coming soon</span>
+                </div>
+              ))}
+            </div>
+
             {docs.length > 0 && (
               <ul data-testid="doc-list" className="max-h-40 divide-y divide-slate-800 overflow-y-auto text-sm">
                 {docs.map((d) => (
                   <li key={d.id} className="flex justify-between gap-2 py-1">
                     <span className="truncate" title={d.filename}>{d.filename}</span>
-                    <span className="shrink-0 text-slate-500">{d.size} B</span>
+                    <span className="shrink-0 text-slate-500">{fmtBytes(d.size)}</span>
                   </li>
                 ))}
               </ul>
             )}
 
             <div className="flex justify-between">
-              <Button variant="outline" onClick={() => router.push("/")} data-testid="setup-back">
-                Back
-              </Button>
-              <Button onClick={startTrain} disabled={uploading || docs.length === 0} data-testid="train-btn">
-                Train Cartridges
+              <Button variant="outline" onClick={() => goto("name")} data-testid="step-back">Back</Button>
+              <Button onClick={() => goto("model")} disabled={docs.length === 0} data-testid="step-docs-next">
+                Continue
               </Button>
             </div>
           </CardBody>
         </Card>
       )}
 
-      {/* ---------------- Train step ---------------- */}
-      {step === "train" && (
+      {/* ---------------- Step 3: Model ---------------- */}
+      {step === "model" && (
         <Card>
           <CardHeader>
-            <h2 className="font-medium">Training Cartridges</h2>
+            <h2 className="font-medium">Choose a model</h2>
+            <p className="text-xs text-slate-400">Tiers marked “coming soon” are not selectable yet.</p>
           </CardHeader>
           <CardBody className="space-y-4">
-            <div data-testid="train-progress" className="space-y-3">
-              {/* Stage stepper: the bar is split into the stages of the run. */}
-              <div className="flex gap-2">
-                {TRAIN_STAGES.map((s, i) => {
-                  const fill = clamp01((train.progress - s.lo) / (s.hi - s.lo));
-                  const done = train.progress >= s.hi;
-                  const active = !done && train.progress >= s.lo;
-                  return (
-                    <div key={s.key} className="flex-1 space-y-1.5" data-testid={`stage-${s.key}`}>
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={cn(
-                            "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold",
-                            done
-                              ? "bg-emerald-500 text-slate-950"
-                              : active
-                              ? "bg-slate-100 text-slate-900"
-                              : "bg-slate-800 text-slate-400"
-                          )}
-                        >
-                          {done ? "✓" : i + 1}
-                        </span>
-                        <span
-                          className={cn(
-                            "text-xs",
-                            active ? "font-medium text-slate-100" : done ? "text-slate-400" : "text-slate-500"
-                          )}
-                        >
-                          {s.label}
-                        </span>
+            <div className="space-y-2" data-testid="tier-list">
+              {tiers.map((t) => {
+                const selected = selectedTier === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    disabled={!t.available}
+                    onClick={() => t.available && chooseTier(t.id)}
+                    data-testid={`tier-${t.id}`}
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition",
+                      selected ? "border-emerald-400 bg-emerald-500/5" : "border-slate-800 bg-slate-900",
+                      t.available ? "hover:border-slate-700" : "cursor-not-allowed opacity-60"
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-slate-100">{t.label}</span>
+                        {t.id === defaultTier && t.available && (
+                          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">Default</span>
+                        )}
+                        {!t.available && (
+                          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">Coming soon</span>
+                        )}
                       </div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
-                        <div
-                          className={cn(
-                            "h-full rounded-full transition-[width] duration-500 ease-out",
-                            done ? "bg-emerald-500" : "bg-slate-100"
-                          )}
-                          style={{ width: `${fill * 100}%` }}
-                        />
-                      </div>
+                      <p className="mt-0.5 truncate text-xs text-slate-400">
+                        {t.description}
+                        {t.precision ? ` · ${t.precision}` : ""}
+                        {t.context_tokens ? ` · ${t.context_tokens.toLocaleString()} ctx` : ""}
+                      </p>
                     </div>
-                  );
-                })}
-              </div>
-              {/* Detail + overall timers (whole run, not per stage). */}
-              <div className="flex items-center justify-between text-xs text-slate-400">
-                <span data-testid="train-phase">{train.phase || "Starting…"}</span>
-                <span className="tabular-nums">
-                  <span data-testid="train-elapsed">{fmtClock(train.elapsed)}</span>
-                  {" · "}
-                  <span data-testid="train-pct">{train.progress ? `${train.pct}%` : "0%"}</span>
-                  {" · "}
-                  <span data-testid="train-remaining">
-                    {train.eta != null ? `-${fmtClock(train.eta)}` : "--:--"}
-                  </span>
-                </span>
-              </div>
+                    <span
+                      className={cn(
+                        "ml-3 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+                        selected ? "border-emerald-400 bg-emerald-400 text-slate-950" : "border-slate-700"
+                      )}
+                    >
+                      {selected ? "✓" : ""}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
-            <p className="text-xs text-slate-500">
-              You can leave this page — training keeps running and the corpus stays under
-              “Corpora” as <b>Training</b>. Click it there to return here.
-            </p>
+            {note && <p className="text-sm text-red-400">{note}</p>}
             <div className="flex justify-between">
-              <Button variant="danger" onClick={cancelTrain} disabled={canceling} data-testid="cancel-train">
-                {canceling ? "Canceling…" : "Cancel Training"}
-              </Button>
-              <Button variant="outline" onClick={() => router.push("/")} data-testid="train-exit">
-                Exit
+              <Button variant="outline" onClick={() => goto("documents")} data-testid="step-back">Back</Button>
+              <Button onClick={loadReview} disabled={!selectedTier} data-testid="step-model-next">Continue</Button>
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
+      {/* ---------------- Step 4: Review ---------------- */}
+      {step === "review" && (
+        <Card>
+          <CardHeader>
+            <h2 className="font-medium">Review</h2>
+            <p className="text-xs text-slate-400">A rough pre-run estimate. Real figures land after onboarding.</p>
+          </CardHeader>
+          <CardBody className="space-y-4">
+            <dl className="grid grid-cols-2 gap-3 text-sm" data-testid="review-summary">
+              <Stat label="Documents" value={String(estimate?.n_documents ?? docs.length)} />
+              <Stat label="Total size" value={fmtBytes(estimate?.total_bytes ?? docs.reduce((a, d) => a + d.size, 0))} />
+              <Stat label="Model" value={selectedTierObj?.label ?? selectedTier ?? "—"} />
+              <Stat
+                label="File types"
+                value={
+                  estimate
+                    ? Object.entries(estimate.file_types).map(([k, v]) => `${k} ×${v}`).join(", ") || "—"
+                    : "—"
+                }
+              />
+              <Stat label="Est. onboarding time" value={estimate ? `${fmtClock(estimate.est_seconds)}` : "—"} />
+              <Stat label="Est. cost" value={estimate ? `$${estimate.est_cost_ondemand.toFixed(2)}` : "—"} />
+            </dl>
+            {note && <p className="text-sm text-red-400">{note}</p>}
+            <div className="flex justify-between">
+              <Button variant="outline" onClick={() => goto("model")} data-testid="step-back">Back</Button>
+              <Button onClick={startOnboard} disabled={!canOnboard || busy} data-testid="step-onboard">
+                {busy ? "Starting…" : "Start onboarding"}
               </Button>
             </div>
           </CardBody>
         </Card>
       )}
 
-      {/* ---------------- Done step ---------------- */}
-      {step === "done" && (
-        <Card className="border-emerald-500/30 bg-emerald-500/10">
-          <CardBody className="space-y-4">
-            <div>
-              <div className="text-lg font-semibold" data-testid="setup-done">Training Complete 🎉</div>
-              <p className="text-sm text-slate-300">
-                {corpus.n_cartridges ?? docs.length} cartridge
-                {(corpus.n_cartridges ?? docs.length) === 1 ? "" : "s"} ready. Open the corpus to
-                compare strategies, expose it as an MCP server, and view costs.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={() => router.push(`/corpus/${id}/chat`)} data-testid="open-corpus">
-                Open Corpus
-              </Button>
-              <Button variant="outline" onClick={() => setStep("upload")} data-testid="retrain">
-                Add Documents / Re-train
-              </Button>
-            </div>
-          </CardBody>
-        </Card>
+      {/* ---------------- Step 5: Onboard ---------------- */}
+      {step === "onboarding" && (
+        <>
+          {gated ? (
+            // 409 gate: no serving engine enabled yet.
+            <Card className="border-amber-500/30 bg-amber-500/5">
+              <CardBody className="space-y-3">
+                <div className="text-lg font-semibold" data-testid="onboard-gated">Queued for a model</div>
+                <p className="text-sm text-slate-300">
+                  Your documents are ready to onboard. Onboarding starts once a model is enabled for your
+                  account. We will pick this up automatically — nothing else to do here.
+                </p>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => goto("review")} data-testid="gated-back">Back to review</Button>
+                  <Button variant="outline" onClick={() => router.push("/")}>All Corpora</Button>
+                </div>
+              </CardBody>
+            </Card>
+          ) : (
+            // Live progress (a run is in flight).
+            <Card>
+              <CardHeader><h2 className="font-medium">Onboarding</h2></CardHeader>
+              <CardBody className="space-y-4">
+                <div data-testid="onboard-progress" className="space-y-2">
+                  <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                    <div
+                      className="h-full rounded-full bg-slate-100 transition-[width] duration-500 ease-out"
+                      style={{ width: `${Math.max(4, train.pct)}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span data-testid="onboard-phase">{train.phase || "Starting…"}</span>
+                    <span className="tabular-nums">
+                      <span data-testid="onboard-elapsed">{fmtClock(train.elapsed)}</span>
+                      {" · "}
+                      <span data-testid="onboard-pct">{train.pct}%</span>
+                      {" · "}
+                      <span>{train.eta != null ? `-${fmtClock(train.eta)}` : "--:--"}</span>
+                    </span>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-500">
+                  You can leave this page — onboarding keeps running and the corpus stays under
+                  “Corpora” as <b>Training</b>. Click it there to return here.
+                </p>
+                <div className="flex justify-between">
+                  <Button variant="danger" onClick={() => train.cancel()} data-testid="cancel-onboard">
+                    Cancel
+                  </Button>
+                  <Button variant="outline" onClick={() => router.push("/")} data-testid="onboard-exit">Exit</Button>
+                </div>
+              </CardBody>
+            </Card>
+          )}
+        </>
       )}
     </main>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
+      <dt className="text-xs text-slate-500">{label}</dt>
+      <dd className="mt-0.5 truncate font-medium text-slate-100" title={value}>{value}</dd>
+    </div>
   );
 }

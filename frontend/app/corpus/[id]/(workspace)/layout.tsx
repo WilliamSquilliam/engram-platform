@@ -9,12 +9,12 @@ import Link from "next/link";
 import { api, getToken, notifyCorporaChanged } from "@/lib/api";
 import { Badge, cn } from "@/components/ui";
 
+// Chat-only MVP: chat IS the product surface, so the workspace nav is just Chat + Documents.
+// Compare / Scale Test / Costs are retired from the chrome (their pages stay routable for internal
+// use, but nothing links to them). MCP Server likewise stays routable but out of the nav.
 const NAV = [
-  { seg: "scale", label: "Scale Test" },
-  { seg: "chat", label: "Compare" },
+  { seg: "chat", label: "Chat" },
   { seg: "documents", label: "Documents" },
-  // MCP Server tab hidden from the MVP demo chrome (page stays routable at /mcp).
-  { seg: "costs", label: "Costs" },
 ];
 
 export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
@@ -112,7 +112,13 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
           })}
         </nav>
       </div>
-      <div className="flex-1 overflow-y-auto p-8">{children}</div>
+      {/* Chat manages its own full-height scroll + composer, so it gets a bare pane; other tabs
+          keep the padded, scrollable container. */}
+      {pathname.endsWith("/chat") ? (
+        <div className="min-h-0 flex-1">{children}</div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-8">{children}</div>
+      )}
     </div>
   );
 }

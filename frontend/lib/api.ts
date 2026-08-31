@@ -8,6 +8,10 @@ import type {
   Document,
   Economics,
   Job,
+  ModelTiers,
+  OnboardEstimate,
+  OnboardingState,
+  OnboardingStep,
   ScaleRun,
   TokenResponse,
   User,
@@ -110,12 +114,82 @@ export const api = {
   cancelTraining: (id: string) => req<Job>(`/corpora/${id}/cancel`, { method: "POST" }),
   getJob: (jid: string) => req<Job>(`/jobs/${jid}`),
   listJobs: (id: string) => req<Job[]>(`/corpora/${id}/jobs`),
-  chat: (id: string, question: string, k = 3) =>
+  chat: (id: string, question: string, k = 3, history: { role: string; content: string }[] = [],
+         docIds?: string[]) =>
     req<ChatResponse>(`/corpora/${id}/chat`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ question, k }),
+      body: JSON.stringify({ question, k, history, ...(docIds?.length ? { doc_ids: docIds } : {}) }),
     }),
+  // Token-streaming chat (SSE over fetch — EventSource can't POST/attach the JWT). Emits parsed
+  // events: {head, used_docs, sources} -> {delta} xN -> {done, metrics}; {error} in-band on GPU
+  // failure. `history` rides prior turns; `docIds` pins the first turn's retrieval on follow-ups.
+  // Returns an AbortController so the UI can Stop mid-stream.
+  chatStream: (
+    id: string, question: string,
+    onEvent: (e: any) => void,
+    opts: { k?: number; history?: { role: string; content: string }[]; docIds?: string[] } = {},
+  ) => {
+    const ctrl = new AbortController();
+    const run = async () => {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/corpora/${id}/chat/stream`, {
+        method: "POST",
+        headers: { ...JSON_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({
+          question, k: opts.k ?? 3, history: opts.history ?? [],
+          ...(opts.docIds?.length ? { doc_ids: opts.docIds } : {}),
+        }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) throw new Error((await res.text()) || `stream failed (${res.status})`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, i).trim();
+          buf = buf.slice(i + 2);
+          if (chunk.startsWith("data: ")) {
+            try { onEvent(JSON.parse(chunk.slice(6))); } catch { /* partial frame */ }
+          }
+        }
+      }
+    };
+    return { controller: ctrl, done: run() };
+  },
+  // --- Resumable onboarding wizard --------------------------------------------------------------
+  modelTiers: () => req<ModelTiers>("/models"),
+  getOnboarding: (id: string) => req<OnboardingState>(`/corpora/${id}/onboarding`),
+  patchOnboarding: (id: string, patch: { onboarding_step?: OnboardingStep; model_tier?: string }) =>
+    req<OnboardingState>(`/corpora/${id}/onboarding`, {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(patch),
+    }),
+  estimate: (id: string) => req<OnboardEstimate>(`/corpora/${id}/estimate`),
+  // Step 5. Returns the onboarding state on dispatch, or {no_serving_engine: true} on the 409 gate
+  // (no live model yet) so the UI shows "starts once a model is enabled" instead of throwing.
+  onboard: async (id: string): Promise<OnboardingState | { no_serving_engine: true; tier?: string }> => {
+    const token = getToken();
+    const res = await fetch(`${API_URL}/corpora/${id}/onboard`, {
+      method: "POST",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (res.status === 409) {
+      const j = await res.json().catch(() => ({}));
+      if (j.status === "no_serving_engine") return { no_serving_engine: true, tier: j.tier };
+    }
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.detail || `onboard failed (${res.status})`);
+    }
+    return res.json();
+  },
   // Side-by-side: cartridge alone / cart+RAG (floor) / adaptive / RAG (latency + modeled $/query).
   // side lets the UI run the two answers sequentially (cart renders while rag still generates).
   compare: (id: string, question: string, k = 3, queriesPerMonth = 100_000,
