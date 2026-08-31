@@ -8,7 +8,10 @@ import type {
   CostComparison,
   Document,
   Economics,
+  Invite,
   Job,
+  Member,
+  MemberRole,
   ModelTiers,
   OnboardEstimate,
   OnboardingState,
@@ -90,6 +93,55 @@ export const api = {
     return res.json();
   },
   me: () => req<User>("/auth/me"),
+
+  // --- Invite-only self-serve auth ---------------------------------------------------------------
+  // Waitlist a prospective tenant. Always returns success-shaped (backend queues for manual review).
+  requestAccess: (payload: { email: string; name: string; tenant_name: string; reason?: string }) =>
+    req<{ status: string }>("/auth/request-access", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(payload),
+    }),
+  // Redeem an invite token by setting a password; returns a session token so we land in the app.
+  acceptInvite: (token: string, password: string, name?: string) =>
+    req<TokenResponse>("/auth/accept-invite", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token, password, ...(name ? { name } : {}) }),
+    }),
+  // Always returns a generic success message (never reveals whether the email exists).
+  forgotPassword: (email: string) =>
+    req<{ status: string }>("/auth/forgot-password", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ email }),
+    }),
+  resetPassword: (token: string, password: string) =>
+    req<{ status: string }>("/auth/reset-password", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token, password }),
+    }),
+
+  // --- Team management (tenant-admin only) -------------------------------------------------------
+  listMembers: () => req<Member[]>("/admin/members"),
+  // Outstanding (unaccepted) invites — lets an admin re-copy or revoke a pending link.
+  listInvites: () => req<Invite[]>("/admin/invites"),
+  createInvite: (email: string, role: MemberRole) =>
+    req<Invite>("/admin/invites", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ email, role }),
+    }),
+  revokeInvite: (id: string) => req<null>(`/admin/invites/${id}`, { method: "DELETE" }),
+  updateMemberRole: (userId: string, role: MemberRole) =>
+    req<Member>(`/admin/members/${userId}`, {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ role }),
+    }),
+  removeMember: (userId: string) => req<null>(`/admin/members/${userId}`, { method: "DELETE" }),
+
   listCorpora: () => req<Corpus[]>("/corpora"),
   createCorpus: (name: string) =>
     req<Corpus>("/corpora", {
