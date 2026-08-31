@@ -114,9 +114,15 @@ reference platform.
     ABC; SharePoint/Confluence/Drive/S3 are stubs (`connectors/base.py`) and not wired to the
     upload router. **MVP builds two live connectors — SharePoint and Google Drive** — plus the
     connector→ingest pipeline (OAuth to the source, list/select folders, pull files, sync). The
-    Google OAuth client we already have can seed Drive access scopes.
+    Google OAuth client we already have can seed Drive access scopes. **✅ Framework done
+    (2026-08-31):** config-driven connector registry + `GET /connectors`; Drive/SharePoint
+    scaffolds gated `available:false` until OAuth creds are set. **Remaining: the actual OAuth
+    flows** (Drive scopes on the existing Google client; a new Azure AD app for SharePoint) +
+    folder pick/pull/sync.
   - **Document parsing** — today plain `.txt`/`.md` only. Add PDF/DOCX/HTML extraction
-    (e.g. `unstructured`), chunk/normalize before onboarding.
+    (e.g. `unstructured`), chunk/normalize before onboarding. **✅ Done (2026-08-31):**
+    `parsing.py` (pypdf/python-docx/beautifulsoup4) writes an extracted-text sidecar the onboard
+    path consumes; the wizard surfaces per-doc `parse_status`/`parse_error`.
   - **Per-document CRUD** — add per-doc delete/replace endpoints (only whole-corpus delete
     exists today).
   - **Change detection / re-onboard** — the mechanics exist (idempotent re-onboard under the
@@ -350,6 +356,16 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-08-31 — Shipped E2 remainder: document parsing + connector framework.** Parallel
+  agents again (backend in the main tree / frontend in a worktree). Backend: `parsing.py`
+  (pypdf/python-docx/beautifulsoup4 — control plane stays torch-free) wired into upload → an
+  extracted-text sidecar so onboarding/retrieval consume real text; `Document.parse_error`
+  (Alembic `0006`); a config-driven connector registry + `GET /connectors` with Drive/SharePoint
+  gated `available:false` until OAuth creds are set (OAuth itself not built — needs app
+  registration). Frontend: the wizard documents step accepts PDF/DOCX/HTML, shows per-doc
+  parse-status badges + errors (self-stopping 2s poll), and renders the gated Connect
+  Drive/SharePoint buttons. Merged to `main` (`5d9078a`); backend suite **113 passed / 4 skipped**;
+  frontend build clean; no integration seam this time.
 - **2026-08-31 — Shipped E6 + E3 + onboarding wizard frontend (parallel build).** Three chunks
   built by parallel Opus agents (E6 backend in the main tree; the frontend in an isolated git
   worktree, so their builds/tests couldn't race) and integrated: **E6 per-tenant cart namespacing**
