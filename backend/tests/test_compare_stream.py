@@ -48,18 +48,20 @@ def fake_engine(monkeypatch):
     return captured
 
 
-def test_context_for_known_and_unknown_ids(client, auth, make_corpus, upload_doc, mock_ml):
+def test_context_for_known_and_unknown_ids(client, auth, make_corpus, upload_doc, mock_ml, cart_id):
     headers, _ = auth
     cid = _ready_corpus(client, headers, make_corpus, upload_doc)
-    assert "alpha beta gamma" in retrieval.context_for(cid, ["a"])
+    a = cart_id(cid)  # the tenant-namespaced id for a.txt
+    assert "alpha beta gamma" in retrieval.context_for(cid, [a])
     with pytest.raises(KeyError):
-        retrieval.context_for(cid, ["a", "nope"])
+        retrieval.context_for(cid, [a, "nope"])
 
 
 def test_stream_cart_side_retrieves_ids_only(client, auth, make_corpus, upload_doc,
-                                             mock_ml, fake_engine, monkeypatch):
+                                             mock_ml, fake_engine, monkeypatch, cart_id):
     headers, _ = auth
     cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    a = cart_id(cid)  # tenant-namespaced id retrieve() now returns
     _to_vllm(monkeypatch)
     calls = {"retrieve": 0, "retrieve_context": 0}
     real_retrieve = retrieval.retrieve
@@ -74,13 +76,13 @@ def test_stream_cart_side_retrieves_ids_only(client, auth, make_corpus, upload_d
     assert r.status_code == 200
     assert calls["retrieve"] == 1
     assert fake_engine["url"].endswith("/query_stream")
-    assert fake_engine["payload"]["doc_ids"] == ["a"]
+    assert fake_engine["payload"]["doc_ids"] == [a]
     head = json.loads(r.text.split("\n\n")[0].removeprefix("data: "))
-    assert head["used_docs"] == ["a"] and head["sources"][0]["title"] == "Alpha Paper Title"
+    assert head["used_docs"] == [a] and head["sources"][0]["title"] == "Alpha Paper Title"
 
 
 def test_stream_rag_with_doc_ids_skips_retrieval(client, auth, make_corpus, upload_doc,
-                                                 mock_ml, fake_engine, monkeypatch):
+                                                 mock_ml, fake_engine, monkeypatch, cart_id):
     headers, _ = auth
     cid = _ready_corpus(client, headers, make_corpus, upload_doc)
     _to_vllm(monkeypatch)
@@ -90,7 +92,7 @@ def test_stream_rag_with_doc_ids_skips_retrieval(client, auth, make_corpus, uplo
                         lambda *a, **k: pytest.fail("rag side with doc_ids must not retrieve"))
 
     r = client.post(f"/corpora/{cid}/compare/stream?side=rag",
-                    json={"question": "what is alpha?", "doc_ids": ["a"]}, headers=headers)
+                    json={"question": "what is alpha?", "doc_ids": [cart_id(cid)]}, headers=headers)
     assert r.status_code == 200
     assert fake_engine["url"].endswith("/rag_query_stream")
     # context_for assembled the SAME evidence the cart side saw, from the passed ids

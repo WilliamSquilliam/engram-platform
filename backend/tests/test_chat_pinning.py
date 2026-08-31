@@ -30,27 +30,29 @@ def fake_inference(monkeypatch):
 
 
 def test_chat_pinned_doc_ids_skips_retrieve(client, auth, make_corpus, upload_doc,
-                                            mock_ml, fake_inference, monkeypatch):
+                                            mock_ml, fake_inference, monkeypatch, cart_id):
     """Pinned doc_ids -> retrieval.retrieve is NOT called; the answer still comes back with used_docs
     echoing the pinned ids so the next turn can re-pin."""
     headers, _ = auth
     cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    a = cart_id(cid)  # the tenant-namespaced id a first turn would have resolved
     _to_vllm(monkeypatch)
     monkeypatch.setattr(retrieval, "retrieve",
                         lambda *a, **k: pytest.fail("pinned chat must not re-retrieve"))
 
     r = client.post(f"/corpora/{cid}/chat",
-                    json={"question": "follow-up?", "doc_ids": ["a"]}, headers=headers)
+                    json={"question": "follow-up?", "doc_ids": [a]}, headers=headers)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["answer"] == "pinned answer"
-    assert body["used_docs"] == ["a"]              # client echoes these back on the next turn
+    assert body["used_docs"] == [a]                # client echoes these back on the next turn
     assert body["sources"][0]["title"] == "Alpha Paper Title"
 
 
 def test_chat_without_doc_ids_still_retrieves(client, auth, make_corpus, upload_doc,
-                                              mock_ml, fake_inference, monkeypatch):
-    """No doc_ids (first turn) -> retrieval runs as before; the resolved ids come back as used_docs."""
+                                              mock_ml, fake_inference, monkeypatch, cart_id):
+    """No doc_ids (first turn) -> retrieval runs as before; the resolved ids come back as used_docs
+    (now the tenant-namespaced id, which the next turn re-pins)."""
     headers, _ = auth
     cid = _ready_corpus(client, headers, make_corpus, upload_doc)
     _to_vllm(monkeypatch)
@@ -62,7 +64,7 @@ def test_chat_without_doc_ids_still_retrieves(client, auth, make_corpus, upload_
     r = client.post(f"/corpora/{cid}/chat", json={"question": "what is alpha?"}, headers=headers)
     assert r.status_code == 200, r.text
     assert calls["n"] == 1
-    assert r.json()["used_docs"] == ["a"]
+    assert r.json()["used_docs"] == [cart_id(cid)]
 
 
 def test_chat_pinned_unknown_ids_400(client, auth, make_corpus, upload_doc,
@@ -82,10 +84,11 @@ def test_chat_pinned_unknown_ids_400(client, auth, make_corpus, upload_doc,
 
 
 def test_mcp_query_pins_too(client, auth, make_corpus, upload_doc,
-                            mock_ml, fake_inference, monkeypatch):
+                            mock_ml, fake_inference, monkeypatch, cart_id):
     """/mcp/{id}/query flows through the same _answer -> pinning works for the MCP path as well."""
     headers, _ = auth
     cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    a = cart_id(cid)
     # mcp token lives on the corpus row; fetch it via the JSON API (created at corpus create).
     token = client.get(f"/corpora/{cid}", headers=headers).json()["mcp_token"]
     _to_vllm(monkeypatch)
@@ -93,14 +96,14 @@ def test_mcp_query_pins_too(client, auth, make_corpus, upload_doc,
                         lambda *a, **k: pytest.fail("pinned mcp query must not re-retrieve"))
 
     r = client.post(f"/mcp/{cid}/query",
-                    json={"question": "follow-up?", "doc_ids": ["a"]},
+                    json={"question": "follow-up?", "doc_ids": [a]},
                     headers={"X-MCP-Token": token})
     assert r.status_code == 200, r.text
-    assert r.json()["used_docs"] == ["a"]
+    assert r.json()["used_docs"] == [a]
 
 
 def test_compare_nonstream_pinned_doc_ids_no_reretrieve(client, auth, make_corpus, upload_doc,
-                                                        mock_ml, monkeypatch):
+                                                        mock_ml, monkeypatch, cart_id):
     """Non-stream /compare on the vLLM path with pinned doc_ids -> retrieve_context is NOT called;
     the pinned ids are validated + reused, and both cart and rag sides see the SAME evidence."""
     headers, _ = auth
@@ -124,7 +127,7 @@ def test_compare_nonstream_pinned_doc_ids_no_reretrieve(client, auth, make_corpu
     monkeypatch.setattr(ml_client, "inference_rag", _rag)
 
     r = client.post(f"/corpora/{cid}/compare",
-                    json={"question": "what is alpha?", "doc_ids": ["a"]}, headers=headers)
+                    json={"question": "what is alpha?", "doc_ids": [cart_id(cid)]}, headers=headers)
     assert r.status_code == 200, r.text
     keys = [s["key"] for s in r.json()["strategies"]]
     assert keys == ["everyday", "rag"]

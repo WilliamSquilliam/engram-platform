@@ -13,10 +13,10 @@ from ..db import SessionLocal
 from ..deps import get_current_user, get_db
 from ..models import Corpus, Document, Job, User
 from ..ratelimit import limiter
-from ..retrieval import doc_id_for
+from ..retrieval import cart_id_for
 from ..schemas import GcCartsReq, JobResp, ProgressReq
 from ..storage import storage
-from .corpora import _ml_plane_cleanup, deletable_slugs
+from .corpora import _ml_plane_cleanup, deletable_carts
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["jobs"])
@@ -28,13 +28,15 @@ def _job_resp(j: Job) -> JobResp:
                    created_at=j.created_at, updated_at=j.updated_at)
 
 
-def _compensate_if_deleted(corpus_id: str, tenant_id: str, run_slugs: list[str]) -> bool:
+def _compensate_if_deleted(corpus_id: str, tenant_id: str, run_cart_ids: list[str]) -> bool:
     """Race guard for the vLLM onboard path: a corpus DELETE can land WHILE an onboard is in flight, so
     the delete's ML-plane cleanup runs before this onboard has written its blobs — and then the onboard
     resurrects offboarded blobs that no live corpus references. Re-check (FRESH session) whether the
     corpus still exists; if it is GONE, run the same invalidate-then-offboard cleanup the delete path
-    would have, over this run's slugs MINUS slugs still referenced by OTHER live corpora (identical
-    exclusion rule via deletable_slugs). Returns True if it compensated (corpus gone), else False.
+    would have, over this run's cart ids MINUS ids still referenced by the SAME tenant's OTHER live
+    corpora (identical exclusion rule via deletable_carts). The tenant_id was captured before onboard
+    (the corpus row is cascaded away on delete), so the intra-tenant scoping still resolves.
+    Returns True if it compensated (corpus gone), else False.
 
     Fully contained — a compensation failure must NOT crash the worker: it best-effort records whatever
     it can to a 'corpus.delete_compensation' receipt and swallows the rest."""
@@ -42,7 +44,7 @@ def _compensate_if_deleted(corpus_id: str, tenant_id: str, run_slugs: list[str])
     try:
         if db.get(Corpus, corpus_id) is not None:
             return False  # corpus still live — normal success path
-        to_delete, shared = deletable_slugs(db, corpus_id, set(run_slugs))
+        to_delete, shared = deletable_carts(db, tenant_id, corpus_id, set(run_cart_ids))
         cart_result: dict = {}
         ml_errors: dict = {}
         if to_delete:
@@ -75,7 +77,7 @@ def _run_training(corpus_id: str, job_id: str) -> None:
         tenant_id = corpus.tenant_id
         try:
             filenames = storage.list_doc_filenames(corpus_id)
-            docs = [{"doc_id": doc_id_for(fn), "text": storage.read_text(corpus_id, fn)}
+            docs = [{"doc_id": cart_id_for(tenant_id, fn), "text": storage.read_text(corpus_id, fn)}
                     for fn in filenames]
             docs = [d for d in docs if d["text"].strip()]
             if not docs:
@@ -307,9 +309,14 @@ def gc_carts(
     if not secrets.compare_digest(config.INTERNAL_API_TOKEN, x_internal_token or ""):
         raise HTTPException(401, "invalid internal token")
 
-    # Referenced = the slug of EVERY document across ALL corpora/tenants (the store is shared, so GC
-    # must consider the whole DB, not one tenant). Orphans = in the store but referenced by nothing.
-    referenced = {doc_id_for(fn) for (fn,) in db.query(Document.filename).all()}
+    # Referenced = the TENANT-NAMESPACED cart id of EVERY document across ALL corpora/tenants (the
+    # store is shared, so GC must consider the whole DB, not one tenant). Namespacing keeps GC
+    # tenant-safe: an orphan is computed as (store ids − referenced ids), and because each id carries
+    # its owning tenant's prefix, one tenant's live cart can never look like another tenant's orphan.
+    # Join to each document's corpus for its tenant_id (cart_id_for isn't SQL-expressible).
+    referenced = {cart_id_for(tenant_id, fn) for (tenant_id, fn) in
+                  db.query(Corpus.tenant_id, Document.filename)
+                  .join(Document, Document.corpus_id == Corpus.id).all()}
     store_ids = set(ml_client.list_carts().get("cart_ids", []))
     orphans = sorted(store_ids - referenced)
 

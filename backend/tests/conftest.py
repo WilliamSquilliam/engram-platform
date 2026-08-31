@@ -143,3 +143,17 @@ def upload_doc(client: TestClient):
         assert r.status_code == 200, r.text
 
     return _upload
+
+
+@pytest.fixture()
+def cart_id():
+    """The TENANT-NAMESPACED cart id a corpus's document resolves to — the id retrieve()/onboard now
+    emit after per-tenant namespacing (E6). Tests that used to hardcode the bare slug (e.g. 'a' for
+    a.txt) ask for it here so they assert the SAME derivation the app uses without knowing the tenant
+    uuid. `filename` defaults to a.txt (what upload_doc / the make_corpus helpers upload)."""
+    from app.retrieval import _tenant_for_corpus, cart_id_for
+
+    def _cart_id(corpus_id: str, filename: str = "a.txt") -> str:
+        return cart_id_for(_tenant_for_corpus(corpus_id), filename)
+
+    return _cart_id

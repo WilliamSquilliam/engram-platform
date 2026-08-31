@@ -9,7 +9,7 @@ from ..audit import record_event
 from ..config import MAX_REQUEST_MB, MAX_UPLOAD_MB
 from ..deps import get_current_user, get_db
 from ..models import Corpus, Document, User
-from ..retrieval import doc_id_for
+from ..retrieval import cart_id_for
 from ..schemas import CorpusCreateReq, CorpusResp, DocumentResp
 from ..storage import safe_rel, storage
 
@@ -38,16 +38,25 @@ def _doc_resp(d: Document) -> DocumentResp:
                         parse_status=d.parse_status, onboard_status=d.onboard_status)
 
 
-def deletable_slugs(db: Session, corpus_id: str, slugs: set[str]) -> tuple[list[str], set[str]]:
-    """Given a corpus's own cart slugs, split them into (to_delete, shared) against the SHARED store.
-    Cart ids are FILENAME SLUGS in a store shared across corpora/tenants (retrieval.doc_id_for), so a
-    slug this corpus produced may still back a live document in ANOTHER corpus — deleting it would
-    silently break that corpus's serving. Exclusion is computed in Python (doc_id_for isn't
-    SQL-expressible; fine at this scale). Single source of truth so the mid-training compensation in
-    jobs.py applies the EXACT same exclusion rule as the delete path."""
-    shared = {doc_id_for(d.filename) for d in
-              db.query(Document).filter(Document.corpus_id != corpus_id)} & slugs
-    return sorted(slugs - shared), shared
+def deletable_carts(db: Session, tenant_id: str, corpus_id: str,
+                    cart_ids: set[str]) -> tuple[list[str], set[str]]:
+    """Given a corpus's own (tenant-namespaced) cart ids, split them into (to_delete, shared).
+
+    Cart ids are now namespaced by tenant (retrieval.cart_id_for), so cross-TENANT sharing is gone —
+    two tenants uploading the same filename get DIFFERENT carts and never collide. What can still be
+    shared is INTRA-tenant: the SAME tenant reusing a document across its own corpora resolves to one
+    cart id, so deleting one corpus must not offboard a cart another corpus of the same tenant still
+    serves. So the 'shared' check scopes to the SAME tenant's OTHER corpora only (was: every corpus of
+    every tenant). Exclusion is computed in Python (cart_id_for isn't SQL-expressible; fine at this
+    scale). Single source of truth so the mid-training compensation in jobs.py applies the EXACT same
+    exclusion rule as the delete path."""
+    sibling_docs = (
+        db.query(Document.filename)
+        .join(Corpus, Document.corpus_id == Corpus.id)
+        .filter(Corpus.tenant_id == tenant_id, Document.corpus_id != corpus_id)
+    )
+    shared = {cart_id_for(tenant_id, fn) for (fn,) in sibling_docs} & cart_ids
+    return sorted(cart_ids - shared), shared
 
 
 def _ml_plane_cleanup(db: Session, corpus_id: str, to_delete: list[str]) -> tuple[dict, dict]:
@@ -112,12 +121,12 @@ def delete_corpus(corpus_id: str, user: User = Depends(get_current_user), db: Se
     if it deleted MID-onboard it runs a compensating cleanup (see jobs._run_training)."""
     corpus = get_owned_corpus(db, user, corpus_id)
 
-    # n_documents counts Document ROWS of this corpus (not distinct slugs): two files that collide to
-    # the same slug are still two documents, and the receipt reports what the user deleted.
+    # n_documents counts Document ROWS of this corpus (not distinct cart ids): two files that collide
+    # to the same cart id are still two documents, and the receipt reports what the user deleted.
     docs = db.query(Document).filter(Document.corpus_id == corpus.id).all()
     n_documents = len(docs)
-    slugs = {doc_id_for(d.filename) for d in docs}
-    to_delete, shared = deletable_slugs(db, corpus.id, slugs)
+    cart_ids = {cart_id_for(corpus.tenant_id, d.filename) for d in docs}
+    to_delete, shared = deletable_carts(db, corpus.tenant_id, corpus.id, cart_ids)
 
     # DB + storage deletion first (existing behavior, unchanged order): once these commit the data is
     # gone from the control plane's own stores regardless of what the ML plane does next.
@@ -134,12 +143,13 @@ def delete_corpus(corpus_id: str, user: User = Depends(get_current_user), db: Se
     if to_delete:
         cart_result, ml_errors = _ml_plane_cleanup(db, corpus_id, to_delete)
 
-    # Always one receipt. cart_ids_skipped_shared makes the collision exclusion auditable — a reviewer
-    # sees those slugs were RETAINED on purpose (another live corpus still references the slug), not
-    # missed. Corner case: if two slug-sharing corpora are deleted concurrently, each may see the other
-    # still live and classify the slug as shared (both skip; never over-delete). The blob then backs no
-    # live document and becomes an orphan the GC sweep (/internal/gc/carts) removes — so the receipt is
-    # HONEST about what this delete retained even though GC ultimately reaps it.
+    # Always one receipt. cart_ids_skipped_shared makes the intra-tenant exclusion auditable — a
+    # reviewer sees those carts were RETAINED on purpose (another corpus OF THE SAME TENANT still
+    # references the cart), not missed. Cross-tenant sharing can't happen now (ids are tenant-namespaced),
+    # so this only ever lists same-tenant reuse. Corner case: if two corpora sharing a cart are deleted
+    # concurrently, each may see the other still live and classify it shared (both skip; never
+    # over-delete). The blob then backs no live document and becomes an orphan the GC sweep
+    # (/internal/gc/carts) removes — so the receipt is HONEST about what this delete retained.
     record_event(
         db, tenant_id=user.tenant_id, user_id=user.id, event="corpus.delete", corpus_id=corpus_id,
         n_documents=n_documents,
