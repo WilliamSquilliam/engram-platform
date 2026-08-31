@@ -139,7 +139,7 @@ reference platform.
     flow is fully testable with no GPU); reuses the job/progress/cancel path. 79-test suite green.
     Remaining: the frontend wizard UI + real document parsing wiring the per-doc `parse_status`.
 
-### E3 — Chat experience (Google/Anthropic-grade)  → **chat-only MVP (locked)**
+### E3 — Chat experience (Google/Anthropic-grade)  → **chat-only MVP (locked) · ✅ built (2026-08-31)**
 - **Exists:** a Gemini-style collapsible app shell (`components/AppShell.tsx`), a streaming
   **Compare** view (Smart CAG vs RAG side-by-side, SSE) that is really a *sales* surface, and
   a `POST /corpora/{id}/chat` API + `api.chat()` that aren't yet a conversational page.
@@ -204,7 +204,7 @@ reference platform.
   model load) with the budget manager multiplexing carts per model. A `tier → model_ref` config
   table is the seam that lets us add/swap models without touching the UI.
 
-### E6 — Multi-tenancy hardening (correctness, not optional)
+### E6 — Multi-tenancy hardening (correctness, not optional)  → **✅ done (2026-08-31)**
 - **Issue:** today cart slugs are **shared across tenants** — identical filenames collide to
   the same KV blob (a storage-dedup optimization for public corpora). For a real SaaS with
   customers' **private** documents this is a data-isolation problem.
@@ -350,6 +350,17 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-08-31 — Shipped E6 + E3 + onboarding wizard frontend (parallel build).** Three chunks
+  built by parallel Opus agents (E6 backend in the main tree; the frontend in an isolated git
+  worktree, so their builds/tests couldn't race) and integrated: **E6 per-tenant cart namespacing**
+  (cart ids now `<tenant>__<slug>` via `cart_id_for`; cross-tenant slug sharing removed,
+  delete/GC tenant-scoped, no migration needed); **E3 conversational chat UI** as the primary
+  surface (streamed answers via a new `POST /corpora/{id}/chat/stream` SSE endpoint, markdown +
+  citations + localStorage history, Compare/Scale/Costs retired from nav); and the **resumable
+  onboarding wizard UI** (consumes `/models` + the onboarding endpoints; the 409 `no_serving_engine`
+  gate handled gracefully). Merged to `main` (`7e8d1bd`); backend suite **97 passed / 4 skipped**
+  (one integration fix: the frontend's stream tests re-pointed to E6's namespaced ids); frontend
+  build clean. Pushed.
 - **2026-08-31 — Onboarding-flow backend built + tested.** The [Q6] resumable 5-step wizard
   backend is in: Corpus `onboarding_step`/`model_tier`/`model_ref` + per-doc parse/onboard status
   (Alembic `0005`), `PATCH/GET /corpora/{id}/onboarding`, `GET /corpora/{id}/estimate`,
