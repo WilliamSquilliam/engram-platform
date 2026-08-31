@@ -57,3 +57,20 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise cred_exc
     return user
+
+
+def require_tenant_admin(user: User = Depends(get_current_user)) -> User:
+    """Workspace-level admin gate for /admin/* (member management, teammate invites).
+    A tenant `member` is forbidden (403). platform_admin is NOT auto-granted here — a
+    founder still acts inside their own tenant's admin role for workspace actions."""
+    if user.role != "admin":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Tenant admin required")
+    return user
+
+
+def require_platform_admin(user: User = Depends(get_current_user)) -> User:
+    """Cross-tenant superuser gate for /platform-admin/* (approve/deny access
+    requests). Only the founder(s) flagged platform_admin pass; everyone else 403s."""
+    if not user.platform_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Platform admin required")
+    return user

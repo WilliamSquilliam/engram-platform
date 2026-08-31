@@ -140,6 +140,10 @@ def _flag(name: str, default: bool) -> bool:
     )
 
 
+# STARTTLS for SMTP (on by default; ports 587/25). Defined here where _flag exists.
+SMTP_STARTTLS = _flag("SMTP_STARTTLS", default=True)
+
+
 # Open self-service registration. ON for local/dev; OFF in prod by default so a
 # reachable API can't be used to spin up tenants — seed the single operator via
 # BOOTSTRAP_ADMIN_* instead. Override with ALLOW_REGISTRATION if you really want it.
@@ -149,6 +153,35 @@ ALLOW_REGISTRATION = _flag("ALLOW_REGISTRATION", default=not IS_PROD)
 # and the user doesn't exist yet, it's created at startup. Inject via Secrets Manager.
 BOOTSTRAP_ADMIN_EMAIL = os.environ.get("BOOTSTRAP_ADMIN_EMAIL", "")
 BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
+
+# The founder / cross-tenant superuser. The bootstrap admin (above) is seeded as
+# platform_admin automatically; set PLATFORM_ADMIN_EMAIL to also promote an
+# already-existing user (e.g. one created via Google sign-in) to platform_admin at
+# startup. Empty = only the bootstrap admin is a platform_admin.
+PLATFORM_ADMIN_EMAIL = os.environ.get("PLATFORM_ADMIN_EMAIL", "")
+
+# --- transactional email gating (E1) --------------------------------------
+# Same placeholder pattern as serving/connectors: email is OFF by default so every
+# flow (invites, password reset, access-request approval) is fully usable and
+# testable with NO email provider configured. Backends:
+#   none (default): don't send; the token/reset/invite LINK is returned in the API
+#                   response body and logged, so the flow is completable by hand.
+#   ses:            send via boto3 SES (already a dependency).
+#   smtp:           send via stdlib smtplib.
+# When ses/smtp is selected the link is sent by email and NOT leaked in the response.
+EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "none").lower()
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "no-reply@engram.local")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+# SMTP settings (only read when EMAIL_BACKEND=smtp).
+SMTP_HOST = os.environ.get("SMTP_HOST", "localhost")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+# SMTP_STARTTLS is a bool flag; set after _flag() is defined below.
+
+# How long invite / password-reset tokens stay valid (short expiries — security must).
+INVITE_EXPIRE_HOURS = int(os.environ.get("INVITE_EXPIRE_HOURS", "168"))  # 7 days
+PASSWORD_RESET_EXPIRE_HOURS = int(os.environ.get("PASSWORD_RESET_EXPIRE_HOURS", "1"))
 
 # Upload limits (anti-DoS): reject any single document over MAX_UPLOAD_MB or a
 # request whose documents sum past MAX_REQUEST_MB. Files are read into memory.

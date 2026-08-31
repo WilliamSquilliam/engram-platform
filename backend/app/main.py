@@ -16,8 +16,8 @@ from .db import engine, init_db
 from .logging_config import setup_logging
 from .ratelimit import limiter
 from .routers import (
-    audit, auth, chat, compare, connectors, corpora, economics, jobs, metrics, model_tiers,
-    onboarding,
+    admin, audit, auth, chat, compare, connectors, corpora, economics, jobs, metrics,
+    model_tiers, onboarding, platform_admin,
 )
 
 setup_logging()
@@ -71,28 +71,45 @@ init_db()
 
 
 def _bootstrap_admin() -> None:
-    """Seed a single operator account when open registration is disabled (prod).
-    Idempotent: no-op if the user already exists or the env vars are unset."""
-    if not (config.BOOTSTRAP_ADMIN_EMAIL and config.BOOTSTRAP_ADMIN_PASSWORD):
-        return
+    """Seed the founder (platform_admin) when open registration is disabled (prod), and
+    optionally promote an existing user named by PLATFORM_ADMIN_EMAIL. Idempotent."""
     from .db import SessionLocal
     from .models import Tenant, User
     from .security import hash_password
 
     db = SessionLocal()
     try:
-        if db.query(User).filter(User.email == config.BOOTSTRAP_ADMIN_EMAIL).first():
-            return
-        tenant = Tenant(name="Admin workspace")
-        db.add(tenant)
-        db.flush()
-        db.add(User(
-            tenant_id=tenant.id,
-            email=config.BOOTSTRAP_ADMIN_EMAIL,
-            hashed_password=hash_password(config.BOOTSTRAP_ADMIN_PASSWORD),
-        ))
-        db.commit()
-        logger.info("Bootstrapped admin user %s", config.BOOTSTRAP_ADMIN_EMAIL)
+        # 1. Seed the bootstrap admin as a platform_admin (the founder / superuser).
+        if config.BOOTSTRAP_ADMIN_EMAIL and config.BOOTSTRAP_ADMIN_PASSWORD:
+            existing = db.query(User).filter(
+                User.email == config.BOOTSTRAP_ADMIN_EMAIL
+            ).first()
+            if existing is None:
+                tenant = Tenant(name="Admin workspace")
+                db.add(tenant)
+                db.flush()
+                db.add(User(
+                    tenant_id=tenant.id,
+                    email=config.BOOTSTRAP_ADMIN_EMAIL,
+                    hashed_password=hash_password(config.BOOTSTRAP_ADMIN_PASSWORD),
+                    role="admin",
+                    platform_admin=True,
+                    email_verified=True,
+                ))
+                db.commit()
+                logger.info("Bootstrapped platform admin %s", config.BOOTSTRAP_ADMIN_EMAIL)
+            elif not existing.platform_admin:
+                existing.platform_admin = True
+                db.commit()
+
+        # 2. Promote an already-existing user to platform_admin (e.g. one created via
+        #    Google sign-in) without seeding a password. No-op if they don't exist yet.
+        if config.PLATFORM_ADMIN_EMAIL:
+            u = db.query(User).filter(User.email == config.PLATFORM_ADMIN_EMAIL).first()
+            if u is not None and not u.platform_admin:
+                u.platform_admin = True
+                db.commit()
+                logger.info("Promoted %s to platform admin", config.PLATFORM_ADMIN_EMAIL)
     finally:
         db.close()
 
@@ -100,6 +117,8 @@ def _bootstrap_admin() -> None:
 _bootstrap_admin()
 
 app.include_router(auth.router)
+app.include_router(admin.router)
+app.include_router(platform_admin.router)
 app.include_router(corpora.router)
 app.include_router(jobs.router)
 app.include_router(chat.router)

@@ -28,6 +28,104 @@ class TokenResp(BaseModel):
     token_type: str = "bearer"
 
 
+# --- E1: self-serve auth + roles/invites + waitlist ------------------------
+
+def _normalize_email(v: str) -> str:
+    v = v.strip().lower()
+    if not _EMAIL_RE.match(v):
+        raise ValueError("invalid email address")
+    return v
+
+
+class RequestAccessReq(BaseModel):
+    """Public 'request access' (invite-only beta waitlist)."""
+    email: str = Field(max_length=254)
+    name: str = Field(min_length=1, max_length=120)
+    tenant_name: str = Field(min_length=1, max_length=120)
+    reason: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+
+class AcceptInviteReq(BaseModel):
+    """Redeem an invite/approval link: set a password and activate the account."""
+    token: str = Field(min_length=1, max_length=512)
+    password: str = Field(min_length=8, max_length=128)
+    name: str | None = Field(default=None, max_length=120)
+
+
+class ForgotPasswordReq(BaseModel):
+    email: str = Field(max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+
+class ResetPasswordReq(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class InviteCreateReq(BaseModel):
+    """Tenant-admin invites a teammate into their workspace."""
+    email: str = Field(max_length=254)
+    role: str = Field(default="member", pattern="^(admin|member)$")
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+
+class RoleUpdateReq(BaseModel):
+    role: str = Field(pattern="^(admin|member)$")
+
+
+class MemberResp(BaseModel):
+    id: str
+    email: str
+    role: str
+    is_active: bool = True
+
+
+class PendingInviteResp(BaseModel):
+    id: str
+    email: str
+    role: str
+    created_at: datetime.datetime
+
+
+class MembersResp(BaseModel):
+    """GET /admin/members — active members + still-pending invites for the tenant."""
+    members: list[MemberResp] = []
+    invites: list[PendingInviteResp] = []
+
+
+class AccessRequestResp(BaseModel):
+    id: str
+    email: str
+    name: str
+    tenant_name: str
+    reason: str | None = None
+    status: str
+    created_at: datetime.datetime
+
+
+class LinkResp(BaseModel):
+    """Generic response for the gated-email flows. When EMAIL_BACKEND=none the link is
+    included so the flow is completable without an email provider; when a real backend
+    is configured the link is emailed and these fields are omitted (None)."""
+    status: str = "ok"
+    # Present only when EMAIL_BACKEND=none. Named per the flow at the call site.
+    invite_link: str | None = None
+    reset_link: str | None = None
+
+
 class UserResp(BaseModel):
     id: str
     email: str

@@ -32,7 +32,61 @@ class User(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String)
-    role: Mapped[str] = mapped_column(String, default="admin")
+    # Workspace-level role (E1): the FIRST user of a tenant is "admin", teammates
+    # invited in default to "member". require_tenant_admin gates /admin/*.
+    role: Mapped[str] = mapped_column(String, default="member")
+    # Cross-tenant superuser (the founder). Gates /platform-admin/* via
+    # require_platform_admin. Seeded from BOOTSTRAP_ADMIN / PLATFORM_ADMIN_EMAIL.
+    platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Set true once the user proves control of the address (accept-invite / reset).
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Soft-disable a member without deleting them (removed from a workspace, etc.).
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+
+class AccessRequest(Base):
+    """Invite-only beta waitlist (E1). Public /auth/request-access writes a pending
+    row here; a platform_admin approves it, which provisions a tenant + admin user
+    and issues an accept-invite link. `status` ∈ pending|approved|denied."""
+    __tablename__ = "access_requests"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    email: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    tenant_name: Mapped[str] = mapped_column(String)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+
+class Invite(Base):
+    """A pending invitation into a tenant (E1). Used for BOTH teammate invites (an
+    admin invites an email into their workspace) and approval invites (a platform
+    admin approves an access request, seeding a new tenant + its admin). Only the
+    HASH of the token is stored — the raw token lives only in the link. Redeemed via
+    /auth/accept-invite, which creates/activates the user and clears the invite."""
+    __tablename__ = "invites"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    email: Mapped[str] = mapped_column(String, index=True)
+    role: Mapped[str] = mapped_column(String, default="member")  # admin|member
+    token_hash: Mapped[str] = mapped_column(String, index=True)  # sha256 of the raw token
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    accepted_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)  # inviting user id
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+
+class PasswordReset(Base):
+    """A single-use password-reset grant (E1). Only the token HASH is stored; the raw
+    token is in the reset link. Short expiry (config.PASSWORD_RESET_EXPIRE_HOURS).
+    `used_at` marks it consumed so a link can't be replayed."""
+    __tablename__ = "password_resets"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String, index=True)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
 

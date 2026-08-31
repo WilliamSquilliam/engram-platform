@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import hmac
 import os
+import secrets
 
 import jwt
 
@@ -91,3 +92,25 @@ def decode_token(token: str) -> dict:
     if AUTH_BACKEND == "oidc":
         return _decode_oidc(token)
     return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+
+
+# --- opaque single-use tokens for invites / password resets (E1) -----------
+# NOT signed JWTs: these are random, high-entropy, database-backed tokens. We store
+# only their SHA-256 HASH (like a password) so a DB read can't reveal a live token,
+# and compare with hmac.compare_digest to avoid timing leaks. secrets.token_urlsafe
+# is the stdlib CSPRNG — never hand-roll this.
+def generate_token(nbytes: int = 32) -> str:
+    """A URL-safe random token (~43 chars at 32 bytes = 256 bits). Returned to the
+    user in the link; only its hash is persisted."""
+    return secrets.token_urlsafe(nbytes)
+
+
+def hash_token(token: str) -> str:
+    """SHA-256 hex of a token, for storage/lookup. Fast (unlike password hashing) —
+    fine because the token is already high-entropy random, not a low-entropy secret."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def verify_token(token: str, stored_hash: str) -> bool:
+    """Constant-time check that `token` hashes to `stored_hash`."""
+    return hmac.compare_digest(hash_token(token), stored_hash)
