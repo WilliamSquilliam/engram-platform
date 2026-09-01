@@ -94,7 +94,7 @@ side of every switch.
 Each epic notes what already exists (reuse), what we add, and the key files in the
 reference platform.
 
-### E1 — Auth & self-service sign-on  → **built-in email + Google (locked)**
+### E1 — Auth & self-service sign-on  → **built-in email + Google (locked) · ✅ core built (2026-08-31)**
 - **Exists:** email/password → HS256 JWT (PBKDF2, 600k iters), multi-tenant, Google OAuth
   (real client already provisioned), pluggable OIDC backend (`AUTH_BACKEND=oidc`) for later
   enterprise SSO. Registration gate (`ALLOW_REGISTRATION`).
@@ -356,6 +356,17 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-08-31 — Shipped E1: auth self-serve + roles/invites.** Parallel agents (backend main
+  tree / frontend worktree). Invite-only beta (waitlist `request-access` → platform-admin approve
+  → `accept-invite`), forgot/reset-password, **two authz tiers** (tenant `admin`/`member` via
+  `require_tenant_admin` + a `platform_admin` superuser via `require_platform_admin`), and a
+  role-gated **Team** management surface (members/roles/invites, self-demote + last-admin guards).
+  Tokens use `secrets` + SHA-256 + `hmac.compare_digest`; email gated (`EMAIL_BACKEND=none` returns
+  the link in-response so every flow works with no provider). Models + Alembic `0007`. One
+  integration seam fixed: aligned the frontend team page to the backend `{members, invites}` /
+  `LinkResp` shapes. Merged to `main` (`c3f7907`); backend suite **128 passed / 4 skipped**;
+  frontend build clean. Follow-ups: `/auth/me` doesn't yet return `platform_admin` (add when E11
+  needs the platform-admin nav); email needs SES config to actually send (links returned meanwhile).
 - **2026-08-31 — Shipped E2 remainder: document parsing + connector framework.** Parallel
   agents again (backend in the main tree / frontend in a worktree). Backend: `parsing.py`
   (pypdf/python-docx/beautifulsoup4 — control plane stays torch-free) wired into upload → an
