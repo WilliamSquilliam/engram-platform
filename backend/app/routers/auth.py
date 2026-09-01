@@ -201,7 +201,8 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Ses
 
 @router.get("/me", response_model=UserResp)
 def me(user: User = Depends(get_current_user)):
-    return UserResp(id=user.id, email=user.email, tenant_id=user.tenant_id, role=user.role)
+    return UserResp(id=user.id, email=user.email, tenant_id=user.tenant_id,
+                    role=user.role, platform_admin=user.platform_admin)
 
 
 @router.get("/config")

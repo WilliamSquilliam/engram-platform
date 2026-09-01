@@ -23,6 +23,13 @@ class Tenant(Base):
     __tablename__ = "tenants"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String)
+    # Billing plan the workspace is on (E10 billing shell). "beta" = the invite-only beta
+    # (uncapped, un-metered while Stripe is deferred); paid tiers (starter/growth) exist in
+    # pricing.PLAN_LIMITS. Drives the plan/limits the /admin/billing shell shows.
+    plan: Mapped[str] = mapped_column(String, default="beta")
+    # Lifecycle status a platform_admin manages (E11 console). "active" | "suspended" — a
+    # suspended tenant is retained but flagged in the fleet view. Enforcement lands later.
+    status: Mapped[str] = mapped_column(String, default="active")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
 

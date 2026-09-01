@@ -131,6 +131,84 @@ class UserResp(BaseModel):
     email: str
     tenant_id: str
     role: str
+    # Cross-tenant superuser flag — the frontend gates the platform-admin nav on this.
+    platform_admin: bool = False
+
+
+# --- E10 tenant Admin Dashboard: usage + billing ---------------------------
+
+class CorpusUsageResp(BaseModel):
+    corpus_id: str
+    name: str
+    queries: int = 0
+    documents: int = 0
+    storage_gb: float = 0.0
+    gpu_seconds: float = 0.0
+
+
+class UsagePointResp(BaseModel):
+    """One day of the ~30-day served-query series."""
+    date: str
+    queries: int = 0
+
+
+class UsageResp(BaseModel):
+    """GET /admin/usage — tenant-scoped usage rollup + a daily query series."""
+    queries: int = 0
+    documents: int = 0
+    storage_gb: float = 0.0
+    gpu_seconds: float = 0.0
+    n_corpora: int = 0
+    by_corpus: list[CorpusUsageResp] = []
+    series: list[UsagePointResp] = []
+
+
+class BillingResp(BaseModel):
+    """GET /admin/billing — the billing shell (Stripe deferred). Plan + limits + current
+    usage + an estimated cost from the pricing rate card."""
+    plan: str = "beta"
+    limits: dict = {}
+    usage: dict = {}
+    rate_card: dict = {}
+    estimated_cost_usd: float = 0.0
+    currency: str = "usd"
+    period: str
+
+
+# --- E11 platform-admin console: tenants + fleet usage ----------------------
+
+class PlatformTenantResp(BaseModel):
+    id: str
+    name: str
+    created_at: datetime.datetime
+    n_users: int = 0
+    n_corpora: int = 0
+    plan: str = "beta"
+    status: str = "active"
+
+
+class PlatformTenantUsageResp(BaseModel):
+    tenant_id: str
+    name: str
+    queries: int = 0
+    documents: int = 0
+    storage_gb: float = 0.0
+    gpu_seconds: float = 0.0
+    est_cost_usd: float = 0.0
+
+
+class PlatformUsageTotalsResp(BaseModel):
+    queries: int = 0
+    storage_gb: float = 0.0
+    gpu_seconds: float = 0.0
+    est_cost_usd: float = 0.0
+    n_tenants: int = 0
+
+
+class PlatformUsageResp(BaseModel):
+    """GET /platform-admin/usage — per-tenant cost + fleet totals (cross-tenant)."""
+    tenants: list[PlatformTenantUsageResp] = []
+    totals: PlatformUsageTotalsResp = PlatformUsageTotalsResp()
 
 
 class CorpusCreateReq(BaseModel):

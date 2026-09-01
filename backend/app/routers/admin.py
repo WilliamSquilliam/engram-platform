@@ -11,17 +11,22 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from .. import pricing, usage
 from ..config import FRONTEND_URL, INVITE_EXPIRE_HOURS
 from ..deps import get_db, require_tenant_admin
 from ..email import send_email
-from ..models import Invite, User
+from ..models import Invite, Tenant, User
 from ..schemas import (
+    BillingResp,
+    CorpusUsageResp,
     InviteCreateReq,
     LinkResp,
     MemberResp,
     MembersResp,
     PendingInviteResp,
     RoleUpdateReq,
+    UsagePointResp,
+    UsageResp,
 )
 from ..security import generate_token, hash_token
 
@@ -162,3 +167,63 @@ def remove_member(
             )
     db.delete(target)
     db.commit()
+
+
+# --- E10: tenant Admin Dashboard (usage + billing) -----------------------
+# Both are gated by require_tenant_admin and scoped to the caller's own tenant — the
+# usage/billing an admin sees is only ever their own workspace's (isolation via usage.py).
+
+
+@router.get("/usage", response_model=UsageResp)
+def tenant_usage(
+    admin: User = Depends(require_tenant_admin), db: Session = Depends(get_db)
+):
+    """Usage rollup for the caller's workspace: totals + per-corpus breakdown + a ~30-day daily
+    query series. Corpora/documents/storage are strictly tenant-scoped; the query series is the
+    deployment-level served-query signal (Measurement carries no tenant_id). Zeros/empties when
+    there's no data yet — never errors."""
+    data = usage.tenant_usage(db, admin.tenant_id)
+    return UsageResp(
+        queries=data["queries"],
+        documents=data["documents"],
+        storage_gb=data["storage_gb"],
+        gpu_seconds=data["gpu_seconds"],
+        n_corpora=data["n_corpora"],
+        by_corpus=[CorpusUsageResp(**c) for c in data["by_corpus"]],
+        series=[UsagePointResp(**p) for p in data["series"]],
+    )
+
+
+@router.get("/billing", response_model=BillingResp)
+def tenant_billing(
+    admin: User = Depends(require_tenant_admin), db: Session = Depends(get_db)
+):
+    """Billing shell for the caller's workspace (Stripe deferred): the plan + its limits, current
+    usage against them, and an estimated $/period from the pricing rate card. `plan` is the
+    tenant's stored plan (default 'beta'); the cost comes from pricing.estimate_cost_usd so the
+    number matches the platform-admin cost-per-tenant view."""
+    tenant = db.get(Tenant, admin.tenant_id)
+    plan = tenant.plan if tenant else "beta"
+    data = usage.tenant_usage(db, admin.tenant_id)
+    usage_summary = {
+        "queries": data["queries"],
+        "documents": data["documents"],
+        "storage_gb": data["storage_gb"],
+        "gpu_seconds": data["gpu_seconds"],
+        "n_corpora": data["n_corpora"],
+    }
+    est = pricing.estimate_cost_usd(
+        queries=data["queries"],
+        storage_gb=data["storage_gb"],
+        documents=data["documents"],
+    )
+    now = datetime.datetime.now(datetime.UTC)
+    return BillingResp(
+        plan=plan,
+        limits=pricing.plan_limits(plan),
+        usage=usage_summary,
+        rate_card=pricing.rate_card(),
+        estimated_cost_usd=est,
+        currency="usd",
+        period=now.strftime("%Y-%m"),
+    )
