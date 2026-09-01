@@ -15,6 +15,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
 import { api, getToken } from "@/lib/api";
 import { useTrainingJob, fmtClock } from "@/lib/useTrainingJob";
+import { fmtBytes, PARSE_BADGE } from "@/lib/format";
 import { Badge, Button, Card, CardBody, CardHeader, Input, Stepper, cn } from "@/components/ui";
 import type {
   Connector,
@@ -22,7 +23,6 @@ import type {
   ModelTier,
   OnboardEstimate,
   OnboardingStep,
-  ParseStatus,
 } from "@/lib/types";
 
 // Accepted upload types (shared contract with the backend's parsers).
@@ -44,20 +44,6 @@ const stepIndex = (s: OnboardingStep) => Math.max(0, STEP_ORDER.indexOf(s === "r
 // Poll the document list while any file is still parsing so rows transition
 // parsing -> parsed/failed without a manual refresh.
 const PARSE_POLL_MS = 2000;
-
-// Per-document parse-status badge: label + the Badge palette color to use.
-const PARSE_BADGE: Record<ParseStatus, { label: string; color: string }> = {
-  pending: { label: "Queued", color: "slate" },
-  parsing: { label: "Parsing…", color: "amber" },
-  parsed: { label: "Ready", color: "green" },
-  failed: { label: "Failed", color: "red" },
-};
-
-const fmtBytes = (n: number) => {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-};
 
 export default function OnboardingWizard() {
   const { id } = useParams() as { id: string };

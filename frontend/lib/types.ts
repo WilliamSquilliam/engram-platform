@@ -122,14 +122,12 @@ export interface TokenResponse {
 // --- Team management (tenant-admin) -------------------------------------------------------------
 // A tenant member as returned by GET /admin/members.
 export type MemberRole = "admin" | "member";
+// Mirrors backend MemberResp exactly (id/email/role/is_active) — no name or status field is sent.
 export interface Member {
   id: string;
   email: string;
   role: MemberRole;
   is_active?: boolean;
-  name?: string | null;
-  status?: "active" | "invited" | string;
-  created_at?: string;
 }
 
 // A pending (unaccepted) invite as listed under GET /admin/members. No token/link is
@@ -286,7 +284,10 @@ export interface AdminUsage {
 export interface AdminBilling {
   plan: string;
   limits: Record<string, number>;
+  // Open-ended so the extra aggregate keys the backend puts here (storage_gb, n_corpora, …) are covered.
   usage: Record<string, number>;
+  // The plan's rate card (numeric rates + a "currency" string), surfaced so pricing is visible in one place.
+  rate_card: Record<string, number | string>;
   estimated_cost_usd: number;
   currency: string;
   period: string;
