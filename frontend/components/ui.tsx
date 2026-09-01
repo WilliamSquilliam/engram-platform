@@ -85,35 +85,25 @@ export function ProgressBar({
   );
 }
 
-// Horizontal numbered stepper for the New Corpus wizard. `current` is 0-based;
-// steps before it render as completed (check), the current one highlighted.
+// Horizontal wizard stepper — daisyUI's `steps` component (library CSS, not bespoke
+// drawing): equal-width steps, connected progress line, labels under the circles.
+// `current` is 0-based; done + current steps take the brand primary, done ones a check.
 export function Stepper({ steps, current }: { steps: string[]; current: number }) {
   return (
-    <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-      {steps.map((label, i) => {
-        const done = i < current;
-        const active = i === current;
-        return (
-          <li key={label} className="flex items-center gap-2">
-            <span
-              className={cn(
-                "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold",
-                done
-                  ? "bg-emerald-500 text-slate-950"
-                  : active
-                  ? "bg-slate-100 text-slate-900"
-                  : "bg-slate-800 text-slate-400"
-              )}
-            >
-              {done ? "✓" : i + 1}
-            </span>
-            <span className={cn(active ? "font-medium text-slate-100" : "text-slate-400")}>
-              {label}
-            </span>
-            {i < steps.length - 1 && <span className="mx-1 h-px w-8 bg-slate-800" />}
-          </li>
-        );
-      })}
-    </ol>
+    <ul data-theme="engram" className="steps w-full !bg-transparent text-xs" data-testid="stepper">
+      {steps.map((label, i) => (
+        <li
+          key={label}
+          data-content={i < current ? "✓" : String(i + 1)}
+          className={cn(
+            "step",
+            i <= current && "step-primary",
+            i === current ? "font-medium text-slate-100" : "text-slate-400"
+          )}
+        >
+          {label}
+        </li>
+      ))}
+    </ul>
   );
 }
