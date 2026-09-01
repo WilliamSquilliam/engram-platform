@@ -1,5 +1,9 @@
 // Tiny fetch wrapper around the control-plane API. Token in localStorage.
 import type {
+  AccessRequest,
+  AdminBilling,
+  AdminUsage,
+  ApproveAccessResponse,
   AuthConfig,
   ChatResponse,
   CompareResult,
@@ -16,7 +20,9 @@ import type {
   OnboardEstimate,
   OnboardingState,
   OnboardingStep,
+  PlatformUsage,
   ScaleRun,
+  Tenant,
   TokenResponse,
   User,
 } from "./types";
@@ -142,6 +148,26 @@ export const api = {
       body: JSON.stringify({ role }),
     }),
   removeMember: (userId: string) => req<null>(`/admin/members/${userId}`, { method: "DELETE" }),
+
+  // --- E10 Admin Dashboard (tenant-admin) -------------------------------------------------------
+  // Tenant-wide usage: headline totals, a queries-over-time series, and a per-corpus breakdown.
+  getUsage: () => req<AdminUsage>("/admin/usage"),
+  // Plan, limits, usage-vs-limits, and an estimated cost (a shell — billing management coming soon).
+  getBilling: () => req<AdminBilling>("/admin/billing"),
+
+  // --- E11 Platform Admin (Engram staff only) ---------------------------------------------------
+  // Every tenant on the platform (one row each).
+  listTenants: () => req<Tenant[]>("/platform-admin/tenants"),
+  // Cost-per-tenant rows + fleet totals.
+  platformUsage: () => req<PlatformUsage>("/platform-admin/usage"),
+  // Pending waitlist entries awaiting approval.
+  listAccessRequests: () => req<AccessRequest[]>("/platform-admin/access-requests"),
+  // Approve a waitlist entry — returns a one-time invite_link to copy and send.
+  approveAccessRequest: (id: string) =>
+    req<ApproveAccessResponse>(`/platform-admin/access-requests/${id}/approve`, { method: "POST" }),
+  // Deny a waitlist entry (no invite issued).
+  denyAccessRequest: (id: string) =>
+    req<{ status: string }>(`/platform-admin/access-requests/${id}/deny`, { method: "POST" }),
 
   listCorpora: () => req<Corpus[]>("/corpora"),
   createCorpus: (name: string) =>

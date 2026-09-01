@@ -122,7 +122,19 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
               )}
             </nav>
             <div className="space-y-0.5 border-t border-slate-800 p-2">
-              {/* Role-gated: only tenant admins see Team management. */}
+              {/* Role-gated: only tenant admins see the Admin Dashboard + Team management. */}
+              {me?.role === "admin" && (
+                <Link
+                  href="/admin"
+                  className={cn(
+                    "block rounded-md px-3 py-2 text-sm hover:bg-slate-800",
+                    pathname.startsWith("/admin") ? "bg-slate-800 text-slate-100" : "text-slate-300"
+                  )}
+                  data-testid="admin-dashboard-link"
+                >
+                  Admin Dashboard
+                </Link>
+              )}
               {me?.role === "admin" && (
                 <Link
                   href="/team"
@@ -133,6 +145,21 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
                   data-testid="team-link"
                 >
                   Team
+                </Link>
+              )}
+              {/* Platform-gated: only Engram staff (platform_admin) see the fleet-wide console. */}
+              {me?.platform_admin === true && (
+                <Link
+                  href="/platform-admin"
+                  className={cn(
+                    "block rounded-md px-3 py-2 text-sm hover:bg-slate-800",
+                    pathname.startsWith("/platform-admin")
+                      ? "bg-slate-800 text-slate-100"
+                      : "text-violet-300"
+                  )}
+                  data-testid="platform-admin-link"
+                >
+                  Platform Admin
                 </Link>
               )}
               <Link
