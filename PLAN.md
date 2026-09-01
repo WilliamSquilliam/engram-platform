@@ -255,7 +255,7 @@ reference platform.
   `arn:aws:iam::808379776072:root` — root access keys on a local machine. Before deploying, create
   a least-privilege IAM user/role for automation and disable/rotate the root access keys.
 
-### E10 — Tenant "Admin Dashboard" (customer-facing; tenant-admin only)
+### E10 — Tenant "Admin Dashboard" (customer-facing; tenant-admin only)  → **✅ built (2026-08-31)**
 - **Who:** a tenant's admin user(s) (`User.role = admin`); members get a reduced/no view. Add a
   `require_tenant_admin` dependency (admin-role gate on top of `get_current_user`). Shown to the
   customer as simply **"Admin Dashboard."**
@@ -276,7 +276,7 @@ reference platform.
   "Admin Dashboard" section in the tenant nav (admin-only). Reuses the metering foundation (E7)
   and existing audit/team primitives.
 
-### E11 — Platform Admin console (operator-only — the founder)
+### E11 — Platform Admin console (operator-only — the founder)  → **✅ built (2026-08-31)**
 - **Who:** ONLY the platform owner. Needs a new authz tier above tenant roles — a
   `platform_admin`/superuser flag on `User` (or a separate operator identity) — on a separate
   route namespace (`/platform-admin/*`) with strict checks and its own audit. Cross-tenant data
@@ -356,6 +356,19 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-08-31 — Shipped E10 + E11 dashboards.** Parallel agents (backend main tree / frontend
+  worktree). Backend: `/auth/me` now returns `platform_admin`; E10 tenant `GET /admin/usage` +
+  `/admin/billing`, E11 cross-tenant `GET /platform-admin/tenants` + `/platform-admin/usage`
+  (cost-per-tenant + fleet totals); a single pricing source (`app/pricing.py`) + shared aggregation
+  (`app/usage.py`); `Tenant.plan`/`status` + Alembic `0008`. Frontend: the tenant **Admin
+  Dashboard** (`/admin`, role-gated — usage stat cards + recharts time series + per-corpus table +
+  billing shell) and the operator **Platform Admin** console (`/platform-admin`,
+  platform_admin-gated — tenants table, cost-per-tenant recharts bar chart, and the waitlist
+  approve/deny UI on E1's endpoints). Charts via recharts (per the OSS preference). Merged to
+  `main` (`6d2d8e2`); backend **138 passed / 4 skipped**; frontend build clean; **no integration
+  seam** (contract aligned). Note: `Measurement` has no tenant_id (deployment-global serving twin),
+  so query counts are a deployment-level signal; the tenant-scoped facts (corpora/docs/storage)
+  are strictly `tenant_id`-filtered.
 - **2026-08-31 — Shipped E1: auth self-serve + roles/invites.** Parallel agents (backend main
   tree / frontend worktree). Invite-only beta (waitlist `request-access` → platform-admin approve
   → `accept-invite`), forgot/reset-password, **two authz tiers** (tenant `admin`/`member` via
