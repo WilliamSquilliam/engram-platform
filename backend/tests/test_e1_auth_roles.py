@@ -316,6 +316,125 @@ def test_deny_access_request(client):
                        headers=padmin).status_code == 409
 
 
+# --- F1: a deactivated account can't authenticate, even with a valid JWT --------------
+
+def _set_active(email: str, active: bool) -> None:
+    from app.db import SessionLocal
+    from app.models import User
+
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter(User.email == email).first()
+        u.is_active = active
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_deactivated_user_jwt_rejected(client):
+    """A soft-disabled user (is_active=False) must be rejected 401 on every authed request even though
+    their JWT is still cryptographically valid (the token outlives the deactivation)."""
+    email = _email()
+    tok = client.post("/auth/register",
+                      json={"email": email, "password": "pw123456", "tenant_name": "Acme"}
+                      ).json()["access_token"]
+    hdr = {"Authorization": f"Bearer {tok}"}
+
+    # Active: the token works.
+    assert client.get("/auth/me", headers=hdr).status_code == 200
+
+    # Deactivate the account; the SAME token must now be rejected.
+    _set_active(email, False)
+    assert client.get("/auth/me", headers=hdr).status_code == 401
+    # And a gated route too — not just /auth/me.
+    assert client.get("/corpora", headers=hdr).status_code == 401
+
+    # Reactivate -> works again (the check is per-request, not a one-way burn).
+    _set_active(email, True)
+    assert client.get("/auth/me", headers=hdr).status_code == 200
+
+
+# --- F3: an invite is bound to ITS tenant; can't hijack a foreign account --------------
+
+def test_cross_tenant_invite_rejected_and_leaves_account_intact(client):
+    """Emails are globally unique. If tenant B invites an email that already belongs to tenant A,
+    accepting must 409 and must NOT move the account to B or change its role/password."""
+    # Tenant A owns the account (as its admin).
+    victim = _email()
+    client.post("/auth/register",
+                json={"email": victim, "password": "apassword1", "tenant_name": "TenantA"})
+    a_tid = client.get("/auth/me", headers=_headers(client, victim, "apassword1")).json()["tenant_id"]
+
+    # Tenant B (a separate workspace) invites the victim's email as an ADMIN of B.
+    b_owner = _email()
+    client.post("/auth/register",
+                json={"email": b_owner, "password": "pw123456", "tenant_name": "TenantB"})
+    b_admin = _headers(client, b_owner)
+    link = client.post("/admin/invites", json={"email": victim, "role": "admin"},
+                       headers=b_admin).json()["invite_link"]
+    token = link.split("token=")[1]
+
+    # Redeeming B's invite for A's account is rejected 409 — no takeover.
+    r = client.post("/auth/accept-invite", json={"token": token, "password": "hijacked1"})
+    assert r.status_code == 409
+
+    # The victim's account is untouched: still in tenant A, old password still works, new one doesn't.
+    me = client.get("/auth/me", headers=_headers(client, victim, "apassword1")).json()
+    assert me["tenant_id"] == a_tid
+    assert client.post("/auth/login",
+                       data={"username": victim, "password": "hijacked1"}).status_code == 401
+
+
+def _mint_invite(tenant_id: str, email: str, role: str = "member") -> str:
+    """Insert an Invite row directly and return its raw token (the accept-invite path is what we test,
+    not the admin create-invite guard). Mirrors how the app hashes the token."""
+    import datetime
+
+    from app.db import SessionLocal
+    from app.models import Invite
+    from app.security import generate_token, hash_token
+
+    token = generate_token()
+    db = SessionLocal()
+    try:
+        db.add(Invite(
+            tenant_id=tenant_id, email=email, role=role, token_hash=hash_token(token),
+            expires_at=datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            + datetime.timedelta(hours=24),
+        ))
+        db.commit()
+    finally:
+        db.close()
+    return token
+
+
+def test_same_tenant_reinvite_still_works(client):
+    """The tenant-binding must NOT block a legitimate re-invite: accepting an invite from the user's
+    OWN tenant re-keys/re-activates the existing account (this is the branch F3 guards)."""
+    owner = _email()
+    client.post("/auth/register",
+                json={"email": owner, "password": "pw123456", "tenant_name": "Acme"})
+    admin = _headers(client, owner)
+    tid = client.get("/auth/me", headers=admin).json()["tenant_id"]
+
+    # First invite + accept -> a member of this tenant.
+    token = client.post("/admin/invites", json={"email": (mate := _email()), "role": "member"},
+                        headers=admin).json()["invite_link"].split("token=")[1]
+    assert client.post("/auth/accept-invite",
+                       json={"token": token, "password": "matepass1"}).status_code == 200
+
+    # A fresh invite FROM THE SAME TENANT (minted directly) for the existing member, with a new role.
+    token2 = _mint_invite(tid, mate, role="admin")
+    r = client.post("/auth/accept-invite", json={"token": token2, "password": "matepass2"})
+    assert r.status_code == 200
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).json()
+    assert me["role"] == "admin"          # same-tenant re-invite updated the role
+    assert me["tenant_id"] == tid         # still in the same tenant
+    # New password now works.
+    assert client.post("/auth/login",
+                       data={"username": mate, "password": "matepass2"}).status_code == 200
+
+
 def test_email_backend_real_hides_link(client, monkeypatch):
     """When a real EMAIL_BACKEND is configured the link is emailed, NOT returned.
     Patch send_email where the router BOUND it (routers.auth), so the real-provider

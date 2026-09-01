@@ -222,9 +222,12 @@ async def upload_documents(
             doc.storage_key, doc.size = key, size
             doc.parse_status, doc.parse_error = parse_status, parse_error or None
         created.append(doc)
-    # uploading new docs invalidates a previous "ready" state until retrained
+    # uploading new docs invalidates a previous "ready" state until retrained. Also drop the wizard
+    # cursor back to the "documents" step so the two stay coherent — a re-upload after a finished
+    # onboard shouldn't leave the user parked on the terminal "ready" screen with unonboarded docs.
     if corpus.status == "ready":
         corpus.status = "new"
+        corpus.onboarding_step = "documents"
     db.commit()
     return [_doc_resp(d) for d in created]
 

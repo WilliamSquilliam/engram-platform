@@ -154,32 +154,34 @@ def list_tenants(
 def platform_usage(
     _: User = Depends(require_platform_admin), db: Session = Depends(get_db)
 ):
-    """Fleet usage: per-tenant documents/storage/gpu-seconds + estimated cost, and the fleet totals
-    (which are exactly the sum of the per-tenant rows). Cost per tenant uses the SAME
-    pricing.estimate_cost_usd the tenant billing shell uses, so a tenant's bill and its line in this
-    view tie out. Queries are the deployment-level served-query count (Measurement is global), so
-    the same total is reported against the fleet rather than split per tenant."""
+    """Fleet usage: per-tenant queries/documents/storage/gpu-seconds + estimated cost, and the fleet
+    totals. Queries are now attributed per tenant (Measurement.tenant_id) — each tenant's row carries
+    its OWN served-query count and the cost that count drives. Cost per tenant uses the SAME
+    pricing.estimate_cost_usd the tenant billing shell uses, so a tenant's bill and its line here tie
+    out. The fleet `queries` total is the deployment-global count, which is the sum of the per-tenant
+    counts PLUS the NULL-tenant remainder (legacy/demo rows owned by no tenant)."""
     tenants = db.query(Tenant).order_by(Tenant.created_at.desc()).all()
 
-    fleet_queries = usage.total_query_count(db)  # deployment-global served-query count
+    fleet_queries = usage.total_query_count(db)  # deployment-global (all tenants + NULL-tenant rows)
 
     rows: list[PlatformTenantUsageResp] = []
     sum_storage = 0.0
     sum_gpu = 0.0
     sum_cost = 0.0
     for t in tenants:
+        queries = usage.tenant_query_count(db, t.id)  # this tenant's OWN served queries
         documents = usage.tenant_document_count(db, t.id)
         storage_gb = usage.tenant_storage_gb(db, t.id)
         gpu_seconds = usage.tenant_gpu_seconds(db, t.id)
-        # Per-tenant est cost from the shared rate card. Queries aren't attributable per tenant, so
-        # only the tenant-scoped facts (storage + documents) drive the per-tenant line-item cost.
+        # Per-tenant est cost from the shared rate card, on THIS tenant's real facts (queries now
+        # included) — same computation the tenant's own billing shell runs.
         est_cost = pricing.estimate_cost_usd(
-            queries=0, storage_gb=storage_gb, documents=documents
+            queries=queries, storage_gb=storage_gb, documents=documents
         )
         rows.append(PlatformTenantUsageResp(
             tenant_id=t.id,
             name=t.name,
-            queries=0,
+            queries=queries,
             documents=documents,
             storage_gb=storage_gb,
             gpu_seconds=gpu_seconds,
@@ -190,10 +192,10 @@ def platform_usage(
         sum_cost += est_cost
 
     totals = PlatformUsageTotalsResp(
-        # queries is the deployment-level served-query count (Measurement is global) — reported as a
-        # fleet signal, NOT a sum of the per-tenant rows (those are 0, since queries aren't attributable
-        # per tenant). storage/gpu/cost totals ARE exactly the sum of the per-tenant rows, so the fleet
-        # cost ties out to the line items a reviewer can add up.
+        # queries = the deployment-global cart count. That equals the sum of the per-tenant rows PLUS
+        # the NULL-tenant remainder (rows owned by no tenant), so the fleet total is >= the per-tenant
+        # sum by exactly that remainder. storage/gpu/cost totals ARE the exact sum of the per-tenant
+        # rows, so those line items still add up for a reviewer.
         queries=fleet_queries,
         storage_gb=round(sum_storage, 4),
         gpu_seconds=round(sum_gpu, 1),

@@ -217,5 +217,14 @@ def validate() -> None:
     if not INTERNAL_API_TOKEN or len(INTERNAL_API_TOKEN) < 32:
         # The worker -> control-plane progress callback is unauthenticated without it.
         problems.append("INTERNAL_API_TOKEN must be a strong (>=32 char) secret in production")
+    if EMAIL_BACKEND == "none":
+        # With EMAIL_BACKEND=none the invite/reset/approval LINK is returned in the API response
+        # (dev convenience). In prod that leaks account-takeover tokens to any caller — a real
+        # provider (ses/smtp) must be configured so links are emailed, not echoed.
+        problems.append("EMAIL_BACKEND must not be 'none' in production (invite/reset links would leak)")
+    if not ML_AUTH_TOKEN or len(ML_AUTH_TOKEN) < 32:
+        # The control plane <-> ML/vLLM planes share this bearer token; unset = the ML endpoints
+        # (train, onboard, inference) are reachable on the VPC with no auth.
+        problems.append("ML_AUTH_TOKEN must be a strong (>=32 char) secret in production")
     if problems:
         raise RuntimeError("Invalid production config:\n  - " + "\n  - ".join(problems))

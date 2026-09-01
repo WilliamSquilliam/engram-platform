@@ -47,9 +47,12 @@ def _price(m: dict) -> float | None:
             or (metrics.price_from_latency(lat) if lat else None))
 
 
-def _persist(cart: dict | None, rag: dict | None) -> None:
+def _persist(cart: dict | None, rag: dict | None, tenant_id: str | None) -> None:
     """Best-effort append of the just-recorded sides to the measurements table via a short-lived
-    session. A DB failure must NEVER break the serve path: swallow everything, log once at warning."""
+    session. A DB failure must NEVER break the serve path: swallow everything, log once at warning.
+
+    tenant_id (when the caller is a corpus-scoped serve path) is stamped on every row so per-tenant
+    billing can attribute the query; None leaves the row NULL (deployment-level / demo)."""
     try:
         from .db import SessionLocal
         from .models import Measurement
@@ -60,6 +63,7 @@ def _persist(cart: dict | None, rag: dict | None) -> None:
                 continue
             rows.append(Measurement(
                 side=side,
+                tenant_id=tenant_id,
                 latency_ms=_num(m, "latency_ms"),
                 ttft_ms=_num(m, "ttft_ms"),
                 prompt_tokens=_num(m, "prompt_tokens"),
@@ -115,14 +119,18 @@ def _warm_from_db() -> None:
         logger.warning("measurements: failed to warm buffer from DB (starting empty)", exc_info=True)
 
 
-def record(cart: dict | None, rag: dict | None) -> None:
+def record(cart: dict | None, rag: dict | None, *, tenant_id: str | None = None) -> None:
     """Append one measured head-to-head (each side is the {latency_ms, prompt_tokens, ...} metrics dict
     the Inference Service returned). Missing sides are tolerated. Updates the hot in-memory buffer AND
-    durably persists the row(s); a DB failure never propagates to the caller."""
+    durably persists the row(s); a DB failure never propagates to the caller.
+
+    tenant_id (keyword-only, default None) attributes the persisted rows to the owning tenant for
+    per-tenant billing. Corpus-scoped serve paths (chat / mcp / compare) pass their corpus's tenant;
+    non-corpus callers omit it and the rows stay NULL (deployment-level, fleet-totals-only)."""
     with _LOCK:
         _warm_from_db()
         _RECORDS.append({"cart": cart or {}, "rag": rag or {}})
-    _persist(cart, rag)  # outside the lock: the serve path shouldn't block on DB I/O
+    _persist(cart, rag, tenant_id)  # outside the lock: the serve path shouldn't block on DB I/O
 
 
 def summary() -> dict:

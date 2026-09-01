@@ -50,17 +50,51 @@ def test_upload_rejects_oversize_file(client, auth, make_corpus, monkeypatch):
     assert r.status_code == 413
 
 
-def test_internal_token_required_in_prod(monkeypatch):
-    # config.validate() must refuse to boot in prod without a strong internal token.
+def _valid_prod_config(monkeypatch):
+    """Set every prod invariant to a VALID value, so a single subsequent override is the only thing
+    that can trip config.validate()."""
     monkeypatch.setattr(config, "IS_PROD", True)
     monkeypatch.setattr(config, "JWT_SECRET", "x" * 40)
     monkeypatch.setattr(config, "SESSION_SECRET", "y" * 40)
     monkeypatch.setattr(config, "DATABASE_URL", "postgresql+psycopg://h/db")
     monkeypatch.setattr(config, "CORS_ORIGINS", ["https://app.example.com"])
-    monkeypatch.setattr(config, "INTERNAL_API_TOKEN", "")
+    monkeypatch.setattr(config, "INTERNAL_API_TOKEN", "i" * 40)
+    monkeypatch.setattr(config, "EMAIL_BACKEND", "ses")
+    monkeypatch.setattr(config, "ML_AUTH_TOKEN", "m" * 40)
+
+
+def _validate_error(monkeypatch) -> str:
     try:
         config.validate()
-        raised = False
+        return ""
     except RuntimeError as exc:
-        raised = "INTERNAL_API_TOKEN" in str(exc)
-    assert raised
+        return str(exc)
+
+
+def test_internal_token_required_in_prod(monkeypatch):
+    # config.validate() must refuse to boot in prod without a strong internal token.
+    _valid_prod_config(monkeypatch)
+    monkeypatch.setattr(config, "INTERNAL_API_TOKEN", "")
+    assert "INTERNAL_API_TOKEN" in _validate_error(monkeypatch)
+
+
+def test_email_backend_none_rejected_in_prod(monkeypatch):
+    # F2: EMAIL_BACKEND=none in prod would return invite/reset LINKS in API responses -> refuse boot.
+    _valid_prod_config(monkeypatch)
+    monkeypatch.setattr(config, "EMAIL_BACKEND", "none")
+    assert "EMAIL_BACKEND" in _validate_error(monkeypatch)
+
+
+def test_ml_auth_token_required_in_prod(monkeypatch):
+    # F2: an unset (or short) ML_AUTH_TOKEN leaves the ML/vLLM planes unauthenticated -> refuse boot.
+    _valid_prod_config(monkeypatch)
+    monkeypatch.setattr(config, "ML_AUTH_TOKEN", "")
+    assert "ML_AUTH_TOKEN" in _validate_error(monkeypatch)
+    monkeypatch.setattr(config, "ML_AUTH_TOKEN", "short")  # under 32 chars is also rejected
+    assert "ML_AUTH_TOKEN" in _validate_error(monkeypatch)
+
+
+def test_valid_prod_config_passes(monkeypatch):
+    # The fully-valid prod config must NOT raise (guards against a check that can never be satisfied).
+    _valid_prod_config(monkeypatch)
+    assert _validate_error(monkeypatch) == ""

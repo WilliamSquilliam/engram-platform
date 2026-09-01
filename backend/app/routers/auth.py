@@ -129,7 +129,14 @@ def accept_invite(request: Request, req: AcceptInviteReq, db: Session = Depends(
         )
         db.add(user)
     else:
-        # Existing account (e.g. re-invited / previously deactivated): activate + set pw.
+        # Emails are globally unique (User.email is unique), so an existing account already belongs to
+        # exactly one tenant. Only an invite FOR THAT SAME tenant may re-activate/re-key it — a repeat
+        # teammate invite or a re-invite after deactivation. An invite from a DIFFERENT tenant must
+        # never overwrite this account (tenant, role, password): reject 409 and touch nothing, so
+        # tenant B can't hijack tenant A's user by inviting their email.
+        if user.tenant_id != invite.tenant_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "email already in use")
+        # Existing account of THIS tenant (e.g. re-invited / previously deactivated): activate + set pw.
         user.hashed_password = hash_password(req.password)
         user.role = invite.role
         user.email_verified = True

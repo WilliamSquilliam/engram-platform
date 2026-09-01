@@ -154,6 +154,46 @@ def test_savings_endpoint_aggregates(client, clean_measurements):
     assert bucket["cart"]["count"] == 3 and bucket["rag"]["count"] == 3
 
 
+# --- F6: per-tenant metering (measurements carry tenant_id; counts don't cross) --------
+
+def test_record_stamps_tenant_id(clean_measurements):
+    """record(..., tenant_id=X) persists the tenant on both sides; the default (no kwarg) is NULL."""
+    measurements.record(CART, RAG, tenant_id="tenant-A")
+    measurements.record(CART, None)  # no tenant -> NULL (legacy/demo)
+
+    s = SessionLocal()
+    try:
+        stamped = s.query(Measurement).filter(Measurement.tenant_id == "tenant-A").all()
+        null_rows = s.query(Measurement).filter(Measurement.tenant_id.is_(None)).all()
+    finally:
+        s.close()
+    assert len(stamped) == 2 and {m.side for m in stamped} == {"cart", "rag"}
+    assert len(null_rows) == 1 and null_rows[0].side == "cart"
+
+
+def test_tenant_query_count_isolates_and_total_includes_null(clean_measurements):
+    """usage.tenant_query_count is each tenant's OWN cart count; total_query_count is the fleet count
+    = per-tenant sum + the NULL-tenant remainder."""
+    from app import usage
+
+    measurements.record(CART, RAG, tenant_id="A")
+    measurements.record(CART, RAG, tenant_id="A")
+    measurements.record(CART, RAG, tenant_id="B")
+    measurements.record(CART, RAG)  # NULL tenant
+
+    s = SessionLocal()
+    try:
+        assert usage.tenant_query_count(s, "A") == 2   # A's cart rows only
+        assert usage.tenant_query_count(s, "B") == 1   # B's, not A's, not the NULL row
+        # Fleet total = 2 (A) + 1 (B) + 1 (NULL) cart rows.
+        assert usage.total_query_count(s) == 4
+        # Tenant-scoped series counts only that tenant's queries.
+        _series, a_total = usage.query_series(s, tenant_id="A")
+        assert a_total == 2
+    finally:
+        s.close()
+
+
 def test_savings_endpoint_empty(client, clean_measurements):
     """With no recorded measurements the endpoint returns zeroed totals and no savings (not an error)."""
     r = client.get("/metrics/savings")

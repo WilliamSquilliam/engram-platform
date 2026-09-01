@@ -103,10 +103,11 @@ def _compare_vllm(corpus, req: ChatReq, n: int, side: str = "both") -> dict:
              "note": "re-prefills the retrieved context every query"})
     # Feed the demo's measured aggregate: one full record when both sides ran, cart-only otherwise
     # (rag-only calls are the second half of a sequential pair the cart call already recorded).
+    # tenant_id attributes the query to the corpus's tenant for per-tenant billing.
     if side == "both":
-        measurements.record(cm, rm)
+        measurements.record(cm, rm, tenant_id=corpus.tenant_id)
     elif side == "cart":
-        measurements.record(cm, None)
+        measurements.record(cm, None, tenant_id=corpus.tenant_id)
 
     summary = None
     if cm is not None and rm is not None:
@@ -232,7 +233,8 @@ def compare_stream(
             # one synthesized terminal frame (the UI finalizes + badges the tier off this)
             yield ("data: " + json.dumps({"done": True, "metrics": metrics_final}) + "\n\n")
             measurements.record(metrics_final if side == "cart" else None,
-                                metrics_final if side == "rag" else None)
+                                metrics_final if side == "rag" else None,
+                                tenant_id=corpus.tenant_id)
             cost = _price(metrics_final)
             # measured_on rides the summary so the streaming UI labels the numbers as MEASURED
             # on this deployment — without it the footer falls back to the "modeled on the local

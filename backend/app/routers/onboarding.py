@@ -130,8 +130,9 @@ def onboard(
     # wizard cursor, mark docs as onboarding, then dispatch through the shared job machinery.
     corpus.model_ref = serving.model_ref_for_tier(corpus.model_tier)
     corpus.onboarding_step = "onboarding"
+    # parse_status is an UPLOAD-TIME fact (set once when the file was parsed); nothing after upload may
+    # touch it. Dispatch only moves the ONBOARD state machine forward.
     for d in db.query(Document).filter(Document.corpus_id == corpus.id):
-        d.parse_status = "parsing"
         d.onboard_status = "onboarding"
     dispatch_training(db, background, corpus)  # flips status->training, enqueues, commits
     db.refresh(corpus)

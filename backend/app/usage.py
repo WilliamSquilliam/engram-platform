@@ -5,11 +5,13 @@ E11 platform-admin). Rolls up the durable tables into the numbers the dashboards
   - onboarding GPU-seconds          -> Job (train_seconds lands on the corpus after a run)
   - queries + a daily series        -> Measurement (the served-query signal)
 
-Isolation note: Measurement is a DEPLOYMENT-GLOBAL twin of the serving ring buffer — it carries no
-tenant_id/corpus_id (see models.Measurement), so the `queries` count and daily series are a
-deployment-level signal, not a per-tenant attribution. The load-bearing tenant-scoped facts
-(corpora, documents, storage) ARE strictly filtered by tenant_id, which is what enforces
-"tenant A can't see tenant B's data". Everything degrades to 0 / empty on no data — never errors.
+Isolation note: Measurement now carries a nullable tenant_id (see models.Measurement), stamped by the
+corpus-scoped serve paths. Tenant-scoped queries/series filter Measurement.tenant_id == tenant_id, so
+a tenant's `queries` count and daily series are its OWN served queries — not the deployment-global
+signal (the old billing leak). Rows with NULL tenant_id are legacy/demo and appear ONLY in the
+platform fleet totals (total_query_count), never in one tenant's usage/billing. The other tenant-scoped
+facts (corpora, documents, storage) are filtered by tenant_id the same way. Everything degrades to
+0 / empty on no data — never errors.
 
 Kept separate from the routers so the tenant view and the cross-tenant view compute identically."""
 from __future__ import annotations
@@ -43,18 +45,22 @@ def _bytes_to_gb(n: int | None) -> float:
     return round((n or 0) / _BYTES_PER_GB, 4)
 
 
-def query_series(db: Session, days: int = USAGE_WINDOW_DAYS) -> tuple[list[dict], int]:
-    """Deployment-level daily served-query series + total over the window, zero-filled for every day
-    so the chart has a continuous axis. `queries` counts cart-side Measurements (the served answers);
-    if none exist yet, every day is 0. Returns (series, total)."""
+def query_series(db: Session, days: int = USAGE_WINDOW_DAYS,
+                 tenant_id: str | None = None) -> tuple[list[dict], int]:
+    """Daily served-query series + total over the window, zero-filled for every day so the chart has a
+    continuous axis. `queries` counts cart-side Measurements (the served answers); if none exist yet,
+    every day is 0. Returns (series, total).
+
+    tenant_id set -> the tenant's OWN served queries (Measurement.tenant_id == tenant_id), so a tenant
+    sees only its own metering (the billing fix). tenant_id None -> deployment-level (all cart rows,
+    including NULL-tenant legacy/demo rows), for the platform fleet view."""
     start = (_now() - datetime.timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     bucket = _day_bucket(db.bind.dialect.name)
-    rows = (
-        db.query(bucket.label("day"), func.count(Measurement.id))
-        .filter(Measurement.side == "cart", Measurement.created_at >= start)
-        .group_by("day")
-        .all()
-    )
+    q = db.query(bucket.label("day"), func.count(Measurement.id)).filter(
+        Measurement.side == "cart", Measurement.created_at >= start)
+    if tenant_id is not None:
+        q = q.filter(Measurement.tenant_id == tenant_id)
+    rows = q.group_by("day").all()
     counts = {day: int(n or 0) for day, n in rows}
     series = []
     total = 0
@@ -67,9 +73,21 @@ def query_series(db: Session, days: int = USAGE_WINDOW_DAYS) -> tuple[list[dict]
 
 
 def total_query_count(db: Session) -> int:
-    """All-time cart-side served-query count (deployment-global). Used where a lifetime total,
-    not a windowed series, is wanted (platform fleet rollup)."""
+    """All-time cart-side served-query count (deployment-global — every tenant plus NULL-tenant
+    legacy/demo rows). Used where a lifetime total, not a windowed series, is wanted (platform fleet
+    rollup); the NULL-tenant remainder is exactly what the sum of per-tenant counts omits."""
     return int(db.query(func.count(Measurement.id)).filter(Measurement.side == "cart").scalar() or 0)
+
+
+def tenant_query_count(db: Session, tenant_id: str) -> int:
+    """All-time cart-side served-query count for ONE tenant (Measurement.tenant_id == tenant_id). The
+    real per-tenant number the tenant bill + the platform per-tenant row use — no deployment-global
+    leakage. NULL-tenant rows are excluded (they belong to no tenant)."""
+    return int(
+        db.query(func.count(Measurement.id))
+        .filter(Measurement.side == "cart", Measurement.tenant_id == tenant_id)
+        .scalar() or 0
+    )
 
 
 def tenant_corpus_rollup(db: Session, tenant_id: str) -> list[dict]:
@@ -117,13 +135,14 @@ def tenant_corpus_rollup(db: Session, tenant_id: str) -> list[dict]:
 
 def tenant_usage(db: Session, tenant_id: str, days: int = USAGE_WINDOW_DAYS) -> dict:
     """Full usage rollup for ONE tenant (E10 /admin/usage). Corpora/documents/storage are strictly
-    tenant-filtered; the query series is the deployment-level served-query signal. Never errors —
-    a tenant with nothing yet gets zeros and empty lists."""
+    tenant-filtered; the query series + total are now ALSO tenant-scoped (Measurement.tenant_id ==
+    tenant_id) so a tenant sees only its own served queries. Never errors — a tenant with nothing yet
+    gets zeros and empty lists."""
     by_corpus = tenant_corpus_rollup(db, tenant_id)
     documents = sum(c["documents"] for c in by_corpus)
     storage_gb = round(sum(c["storage_gb"] for c in by_corpus), 4)
     gpu_seconds = round(sum(c["gpu_seconds"] for c in by_corpus), 1)
-    series, queries = query_series(db, days)
+    series, queries = query_series(db, days, tenant_id=tenant_id)
     return {
         "queries": queries,
         "documents": documents,

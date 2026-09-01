@@ -109,9 +109,12 @@ def test_admin_usage_aggregates_and_isolates(client, clean_measurements):
     # B: one corpus, 1 doc of 5 GiB — must never appear in A's usage.
     _seed_corpus(b_tid, "B-KB", [5 * gib], train_seconds=2.0)
 
-    # A served-query signal (deployment-level; counted in the series/total).
-    measurements.record(CART, RAG)
-    measurements.record(CART, RAG)
+    # Per-tenant served-query signal (F6): each query is attributed to the tenant whose corpus it ran
+    # against. Two for A, one for B, plus one NULL-tenant (legacy/demo) row that belongs to NEITHER.
+    measurements.record(CART, RAG, tenant_id=a_tid)
+    measurements.record(CART, RAG, tenant_id=a_tid)
+    measurements.record(CART, RAG, tenant_id=b_tid)
+    measurements.record(CART, RAG)  # NULL tenant_id — must not count toward any tenant
 
     a = client.get("/admin/usage", headers=a_hdr)
     assert a.status_code == 200
@@ -123,16 +126,19 @@ def test_admin_usage_aggregates_and_isolates(client, clean_measurements):
     # ~30-day daily series that sums to the windowed query total.
     assert len(ua["series"]) == 30
     assert sum(p["queries"] for p in ua["series"]) == ua["queries"]
-    assert ua["queries"] == 2  # two cart-side records seeded this window
+    # Only A's OWN two queries — B's query and the NULL-tenant row never leak into A's count.
+    assert ua["queries"] == 2
     # by_corpus is A's corpora only.
     names = {c["name"] for c in ua["by_corpus"]}
     assert names == {"A-KB1", "A-KB2"}
 
-    # ISOLATION: B's 5 GiB / 1 doc corpus is invisible to A, and vice versa.
+    # ISOLATION: B's 5 GiB / 1 doc corpus is invisible to A, and vice versa. B's query count is its
+    # own one query (not A's two, not the NULL row).
     ub = client.get("/admin/usage", headers=b_hdr).json()
     assert ub["n_corpora"] == 1
     assert ub["documents"] == 1
     assert ub["storage_gb"] == pytest.approx(5.0, abs=1e-6)
+    assert ub["queries"] == 1
     assert "B-KB" not in names
     assert all(c["name"].startswith("A-") for c in ua["by_corpus"])
     assert all(c["name"].startswith("B-") for c in ub["by_corpus"])
@@ -225,6 +231,14 @@ def test_platform_admin_sees_all_tenants(client, clean_measurements):
     _seed_corpus(a_tid, "A-KB", [gib, gib], train_seconds=6.0)   # 2 GiB, 2 docs
     _seed_corpus(b_tid, "B-KB", [3 * gib], train_seconds=4.0)    # 3 GiB, 1 doc
 
+    # Per-tenant served queries (F6): A gets 3, B gets 1, plus 2 NULL-tenant (legacy/demo) rows that
+    # belong to no tenant. The fleet queries total must be per-tenant sum (4) PLUS the NULL remainder (2).
+    for _ in range(3):
+        measurements.record(CART, RAG, tenant_id=a_tid)
+    measurements.record(CART, RAG, tenant_id=b_tid)
+    measurements.record(CART, RAG)
+    measurements.record(CART, RAG)
+
     # /tenants: every tenant, with counts + plan/status.
     r = client.get("/platform-admin/tenants", headers=founder_hdr)
     assert r.status_code == 200
@@ -242,14 +256,19 @@ def test_platform_admin_sees_all_tenants(client, clean_measurements):
     assert rows["FleetA"]["documents"] == 2
     assert rows["FleetB"]["storage_gb"] == pytest.approx(3.0, abs=1e-6)
     assert rows["FleetA"]["est_cost_usd"] >= 0.0
+    # Per-tenant query rows carry each tenant's OWN count (F6) — no more queries=0 workaround.
+    assert rows["FleetA"]["queries"] == 3
+    assert rows["FleetB"]["queries"] == 1
 
     totals = data["totals"]
     assert totals["n_tenants"] == len(data["tenants"])
-    # Totals tie out to the sum of the per-tenant line items (storage / gpu / cost).
+    # Storage / gpu / cost totals tie out to the exact sum of the per-tenant line items.
     assert totals["storage_gb"] == pytest.approx(sum(t["storage_gb"] for t in data["tenants"]), abs=1e-6)
     assert totals["gpu_seconds"] == pytest.approx(sum(t["gpu_seconds"] for t in data["tenants"]), abs=1e-6)
     assert totals["est_cost_usd"] == pytest.approx(
         round(sum(t["est_cost_usd"] for t in data["tenants"]), 2), abs=1e-6)
+    # Fleet queries = sum of per-tenant counts (4) PLUS the NULL-tenant remainder (2 legacy/demo rows).
+    assert totals["queries"] == sum(t["queries"] for t in data["tenants"]) + 2
 
 
 def test_platform_usage_cost_matches_tenant_billing(client, clean_measurements):

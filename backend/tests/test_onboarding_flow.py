@@ -126,3 +126,54 @@ def test_onboard_dispatches_when_tier_available(client, auth, make_corpus, uploa
     # A job was created and succeeded via the reused job path.
     jobs = client.get(f"/corpora/{cid}/jobs", headers=headers).json()
     assert len(jobs) == 1 and jobs[0]["status"] == "succeeded"
+
+
+def test_onboard_dispatch_sets_onboarding_step_only(client, auth, make_corpus, upload_doc,
+                                                    mock_ml, monkeypatch):
+    """F7 dispatch: /onboard flips onboard_status to 'onboarding' but must NOT write parse_status
+    (an upload-time fact). We stop the run BEFORE the worker completes by having train hang the
+    corpus in 'training' is hard here; instead assert the terminal success also never rewrites
+    parse_status (the dispatch write is the only place parse_status was being touched)."""
+    headers, _ = auth
+    cid = make_corpus(headers)
+    upload_doc(headers, cid, "alpha beta")
+    client.patch(f"/corpora/{cid}/onboarding",
+                 json={"onboarding_step": "review", "model_tier": "balanced"}, headers=headers)
+
+    live = ModelTier("balanced", "Balanced", "test", model_ref="test/model-1",
+                     precision="fp8", context_tokens=8192, enabled=True)
+    monkeypatch.setattr(serving, "tier", lambda tid: live if tid == "balanced" else None)
+    monkeypatch.setattr(serving, "model_ref_for_tier", lambda tid: live.model_ref)
+
+    client.post(f"/corpora/{cid}/onboard", headers=headers)
+    docs = client.get(f"/corpora/{cid}/documents", headers=headers).json()
+    # parse_status is still the upload-time "parsed", never "parsing" (the removed dispatch write).
+    assert all(d["parse_status"] == "parsed" for d in docs)
+
+
+# --- F8: re-uploading to a ready corpus drops the wizard cursor back to "documents" --------
+
+def test_reupload_to_ready_corpus_resets_step_to_documents(client, auth, make_corpus, upload_doc,
+                                                           mock_ml, monkeypatch):
+    """When a re-upload resets a ready corpus's status to 'new', the wizard cursor must also drop to
+    'documents' so the two stay coherent (not left parked on the terminal 'ready' screen)."""
+    headers, _ = auth
+    cid = make_corpus(headers)
+    upload_doc(headers, cid, "alpha beta")
+    client.patch(f"/corpora/{cid}/onboarding",
+                 json={"onboarding_step": "review", "model_tier": "balanced"}, headers=headers)
+
+    live = ModelTier("balanced", "Balanced", "test", model_ref="test/model-1",
+                     precision="fp8", context_tokens=8192, enabled=True)
+    monkeypatch.setattr(serving, "tier", lambda tid: live if tid == "balanced" else None)
+    monkeypatch.setattr(serving, "model_ref_for_tier", lambda tid: live.model_ref)
+
+    client.post(f"/corpora/{cid}/onboard", headers=headers)
+    c = client.get(f"/corpora/{cid}", headers=headers).json()
+    assert c["status"] == "ready" and c["onboarding_step"] == "ready"
+
+    # Re-upload a new document -> status back to 'new' AND cursor back to 'documents'.
+    upload_doc(headers, cid, "brand new content")
+    c = client.get(f"/corpora/{cid}", headers=headers).json()
+    assert c["status"] == "new"
+    assert c["onboarding_step"] == "documents"

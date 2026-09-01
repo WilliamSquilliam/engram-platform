@@ -174,6 +174,11 @@ class Measurement(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, index=True)
     side: Mapped[str] = mapped_column(String, index=True)  # "cart" | "rag"
+    # Owning tenant of the corpus this query ran against — the per-tenant billing attribution key.
+    # Nullable + indexed: corpus-scoped serve paths (chat / mcp / compare) stamp it; non-corpus callers
+    # (and legacy/demo rows recorded before this column existed) leave it NULL, which appears ONLY in
+    # platform fleet totals, never in a single tenant's usage/billing.
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     ttft_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

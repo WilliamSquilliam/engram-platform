@@ -109,6 +109,11 @@ def _run_training(corpus_id: str, job_id: str) -> None:
                 # user re-confirms and restarts (documents/tier selections are preserved).
                 if corpus.onboarding_step == "onboarding":
                     corpus.onboarding_step = "review"
+                # Reset the per-doc ONBOARD state back to "pending" — a cancel means nothing onboarded,
+                # so docs must not stay stuck at "onboarding" forever. parse_status (upload-time) is
+                # left alone.
+                for _d in db.query(Document).filter(Document.corpus_id == corpus_id):
+                    _d.onboard_status = "pending"
                 job.status = "canceled"
                 job.detail = "Training canceled"
                 job.eta_seconds = None
@@ -129,10 +134,14 @@ def _run_training(corpus_id: str, job_id: str) -> None:
                 # actually in flight — a plain re-train (status path, no wizard) leaves it alone.
                 if corpus.onboarding_step == "onboarding":
                     corpus.onboarding_step = "ready"
-                # Mark every document onboarded so per-file progress shows complete on resume.
+                # Per-file ONBOARD outcome (parse_status is an upload-time fact — never touched here).
+                # A doc that extracted text is "ready"; a doc whose sidecar text was EMPTY was an
+                # upload-time parse failure the onboard path already excluded (same non-empty filter as
+                # the docs list above) — mark it "failed" so the wizard shows exactly which files didn't
+                # make it, instead of falsely reporting the whole corpus onboarded.
                 for _d in db.query(Document).filter(Document.corpus_id == corpus_id):
-                    _d.parse_status = "parsed"
-                    _d.onboard_status = "ready"
+                    has_text = bool(storage.read_text(corpus_id, _d.filename).strip())
+                    _d.onboard_status = "ready" if has_text else "failed"
                 if not corpus.mcp_token:
                     corpus.mcp_token = secrets.token_urlsafe(24)
                 # Persist timing/size from the run for the cost + break-even view.
@@ -173,8 +182,11 @@ def _run_training(corpus_id: str, job_id: str) -> None:
             # inspect and retry (the "onboarding" step is transient, only valid while a run is live).
             if corpus.onboarding_step == "onboarding":
                 corpus.onboarding_step = "review"
-                for _d in db.query(Document).filter(Document.corpus_id == corpus_id):
-                    _d.onboard_status = "failed"
+            # The onboard failed, so every doc's ONBOARD state is "failed" (parse_status, an upload-time
+            # fact, is left alone). Unconditional — a re-train that fails must also mark its docs failed,
+            # not just a wizard-driven onboard.
+            for _d in db.query(Document).filter(Document.corpus_id == corpus_id):
+                _d.onboard_status = "failed"
             job.status = "failed"
             job.detail = str(exc)[:500]
             job.eta_seconds = None
@@ -270,9 +282,14 @@ def report_progress(
 ):
     """Worker -> control-plane heartbeat (NOT user-facing; guarded by a shared
     token, not the user JWT). The ML worker posts here every few steps so the UI
-    can show a live progress bar + ETA. On AWS the Temporal worker emits the same."""
-    if config.INTERNAL_API_TOKEN and not secrets.compare_digest(
-            config.INTERNAL_API_TOKEN, x_internal_token or ""):
+    can show a live progress bar + ETA. On AWS the Temporal worker emits the same.
+
+    Fail CLOSED when INTERNAL_API_TOKEN is unset (mirrors gc_carts): an unauthenticated progress
+    endpoint lets any caller drive a tenant's job progress/ETA, so the safe failure is to refuse to
+    run at all (503) rather than skip the check."""
+    if not config.INTERNAL_API_TOKEN:
+        raise HTTPException(503, "progress reporting requires INTERNAL_API_TOKEN")
+    if not secrets.compare_digest(config.INTERNAL_API_TOKEN, x_internal_token or ""):
         raise HTTPException(401, "invalid internal token")
     job = db.get(Job, job_id)
     if job is None:

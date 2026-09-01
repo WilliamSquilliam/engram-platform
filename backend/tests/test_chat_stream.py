@@ -180,3 +180,62 @@ def test_stream_adaptive_disabled_stays_cartridge(client, auth, make_corpus, upl
     assert r.status_code == 200
     assert not any(u.endswith("/rag_query_stream") for u in calls)
     assert _last_frame(r.text)["metrics"]["tier"] == "cartridge"
+
+
+# --- F9: a terminal `done` frame is ALWAYS emitted (client must never hang) -------------
+
+@pytest.fixture()
+def _engine_no_done(monkeypatch):
+    """Fake a GPU stream that emits deltas but NEVER a done frame (so _forward stashes no metrics).
+    Without the finally guard the client would hang forever waiting for a terminal frame."""
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self):
+            yield 'data: {"delta": "partial answer"}'
+            # ...and then the upstream just ends with no done frame.
+
+    @contextmanager
+    def _stream(method, url, **kw):
+        yield _Resp()
+
+    monkeypatch.setattr(httpx, "stream", _stream)
+
+
+def test_stream_always_emits_terminal_done(client, auth, make_corpus, upload_doc, mock_ml,
+                                           monkeypatch, _engine_no_done):
+    """When the ml-service stream ends with no done/metrics, chat_stream must still synthesize a
+    terminal `{"done": true, "metrics": null}` frame so the SSE reader always resolves."""
+    headers, _ = auth
+    cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    _to_vllm(monkeypatch)
+
+    r = client.post(f"/corpora/{cid}/chat/stream", json={"question": "what is alpha?"}, headers=headers)
+    assert r.status_code == 200
+    last = _last_frame(r.text)
+    assert last["done"] is True
+    assert last["metrics"] is None  # synthesized terminal frame (no real metrics arrived)
+
+
+def test_stream_error_frame_is_terminal_no_double_done(client, auth, make_corpus, upload_doc,
+                                                      mock_ml, monkeypatch):
+    """An in-band error IS a terminal frame — the finally must NOT also append a synthesized done
+    (the reader would see two terminals). The last frame is the error."""
+    headers, _ = auth
+    cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    _to_vllm(monkeypatch)
+
+    @contextmanager
+    def _boom(method, url, **kw):
+        raise httpx.ConnectError("gpu down")
+    monkeypatch.setattr(httpx, "stream", _boom)
+
+    r = client.post(f"/corpora/{cid}/chat/stream", json={"question": "q?"}, headers=headers)
+    assert r.status_code == 200
+    frames = [f for f in r.text.strip().split("\n\n") if f]
+    last = json.loads(frames[-1].removeprefix("data: "))
+    assert "error" in last
+    # Exactly one terminal frame: the error, with no trailing synthesized done.
+    assert '"done"' not in frames[-1]
+    assert sum(1 for f in frames if '"done"' in f) == 0

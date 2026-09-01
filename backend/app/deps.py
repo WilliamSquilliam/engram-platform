@@ -24,6 +24,14 @@ def get_db():
         db.close()
 
 
+def _reject_if_inactive(user: User) -> None:
+    """A deactivated user (soft-disabled via is_active=False) must not authenticate on ANY path,
+    even with a still-valid JWT — the token outlives the deactivation, so the check is enforced per
+    request, not just at login. 401 (not 403): the credential is no longer valid, we don't hint why."""
+    if not user.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account is deactivated")
+
+
 def _resolve_oidc_user(db: Session, claims: dict) -> User:
     email = claims.get("email")
     if not email:
@@ -37,6 +45,7 @@ def _resolve_oidc_user(db: Session, claims: dict) -> User:
         user = User(tenant_id=tenant.id, email=email, hashed_password=OAUTH_NO_PASSWORD)
         db.add(user)
         db.commit()
+    _reject_if_inactive(user)  # a pre-existing but deactivated account is rejected on the OIDC path too
     return user
 
 
@@ -56,6 +65,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.get(User, user_id)
     if user is None:
         raise cred_exc
+    _reject_if_inactive(user)
     return user
 
 

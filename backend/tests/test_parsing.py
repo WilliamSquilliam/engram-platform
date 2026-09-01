@@ -1,6 +1,7 @@
 """Document parsing pipeline (app.parsing) + its wiring into upload/onboard, and the
 config-gated GET /connectors contract. Pure-python extractors only (no torch/OCR)."""
 import io
+import zipfile
 
 import pytest
 from app import config
@@ -77,6 +78,68 @@ def test_image_only_pdf_is_failure():
     empty_pdf = _blank_pdf()
     text, ok, err = extract_text("scan.pdf", empty_pdf)
     assert not ok and "no extractable text" in err.lower()
+
+
+# --- F5: decompression-bomb guards (clean parse failure, never an exception) -----------
+
+def _docx_with_huge_declared_member() -> bytes:
+    """A tiny .docx-shaped zip whose central directory DECLARES one member far over the 200 MB
+    uncompressed ceiling. Only ~a few KB on disk (the classic zip-bomb shape). We forge the zip
+    entry so file_size (the declared uncompressed size) is enormous without actually writing it."""
+    import struct
+    import zlib
+
+    name = b"word/document.xml"
+    payload = b"x" * 64
+    comp = zlib.compress(payload)
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    huge = 300 * 1024 * 1024  # 300 MB > the 200 MB guard
+
+    # Local file header (declares the huge uncompressed size in the header too).
+    lfh = struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0, 8, 0, 0, crc,
+                      len(comp), huge, len(name), 0) + name + comp
+    # Central directory record mirroring it.
+    cd = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 20, 0, 8, 0, 0, crc,
+                     len(comp), huge, len(name), 0, 0, 0, 0, 0, 0) + name
+    eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cd), len(lfh), 0)
+    return lfh + cd + eocd
+
+
+def test_docx_zip_bomb_rejected_as_parse_failure():
+    """A DOCX declaring a huge uncompressed size is refused as a clean ok=False parse failure —
+    never raises, never inflates."""
+    bomb = _docx_with_huge_declared_member()
+    text, ok, err = extract_text("bomb.docx", bomb)
+    assert not ok and text == "" and err  # short reason, no exception
+
+
+def test_docx_too_many_members_rejected():
+    """A DOCX zip with an absurd member count is refused (member-count guard), as a parse failure."""
+    from app import parsing
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(parsing._MAX_DOCX_MEMBERS + 5):
+            zf.writestr(f"part_{i}.xml", b"x")
+    text, ok, err = extract_text("many.docx", buf.getvalue())
+    assert not ok and text == "" and err
+
+
+def test_pdf_over_page_limit_rejected(monkeypatch):
+    """A PDF over the page ceiling is refused as a parse failure (page-count guard). We lower the
+    ceiling instead of building a 2000-page PDF."""
+    from app import parsing
+    monkeypatch.setattr(parsing, "_MAX_PDF_PAGES", 1)
+
+    from pypdf import PdfWriter
+    w = PdfWriter()
+    w.add_blank_page(width=100, height=100)
+    w.add_blank_page(width=100, height=100)  # 2 pages > the patched limit of 1
+    out = io.BytesIO()
+    w.write(out)
+
+    text, ok, err = extract_text("big.pdf", out.getvalue())
+    assert not ok and text == "" and err
 
 
 def test_supported_exts_matches_contract():

@@ -46,7 +46,13 @@ def _answer(corpus: Corpus, req: ChatReq) -> ChatResp:
                 raise HTTPException(404, "no documents to retrieve for this corpus")
         result = ml_client.inference_query(doc_ids, req.question, config.INFERENCE_MAX_TOKENS,
                                            history=[m.model_dump() for m in req.history])
-        measurements.record(result.get("metrics"), None)  # feed the demo's measured aggregate
+        # tier="cartridge": the non-stream serve path always answers cart-alone (adaptive escalation
+        # is deliberately STREAM-ONLY — see chat_stream — so a one-shot answer never silently swaps to
+        # the RAG backup). tenant_id attributes this query to the corpus's tenant for per-tenant billing.
+        metrics = result.get("metrics")
+        if metrics is not None:
+            metrics = {**metrics, "tier": "cartridge"}
+        measurements.record(metrics, None, tenant_id=corpus.tenant_id)
         return ChatResp(answer=result["answer"], used_docs=doc_ids,
                         sources=retrieval.doc_sources(corpus.id, doc_ids))
     # default: the HF ml_service (retrieves + generates internally). req.doc_ids is ignored on this
@@ -136,7 +142,7 @@ def chat_stream(
     payload = {"doc_ids": doc_ids, "question": req.question,
                "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history}
 
-    def gen():
+    async def gen():
         # head carries used_docs so the UI can PIN them on follow-up turns (skip re-retrieval) and
         # render the source list immediately, before the first token lands.
         yield ("data: " + json.dumps({"head": True, "used_docs": doc_ids,
@@ -144,15 +150,25 @@ def chat_stream(
         metrics_final = None
         tier = "cartridge"
         escalated = False
+        done_emitted = False  # did a REAL terminal frame (done or error) go out? drives the finally guard
         try:
             hold = {"m": None}
-            yield from _forward(url, payload, hold)          # cart-alone answer
+            # Forward the cart-alone stream. Check for client disconnect between frames: if the browser
+            # went away, stop pumping the GPU stream (closing _forward exits its httpx.stream context)
+            # instead of decoding tokens no one will read.
+            for frame in _forward(url, payload, hold):
+                if await request.is_disconnected():
+                    return
+                yield frame
             metrics_final = hold["m"]
             conf = (metrics_final or {}).get("confidence")
             # ADAPTIVE ROUTER: under-confident cart answer -> escalate to the RAG backup (full
             # retrieved context on the SAME engine) and flag it in-band so the answer shown is the
-            # backup's and the user knows the cart was unsure.
+            # backup's and the user knows the cart was unsure. Skip the (extra GPU) escalation entirely
+            # if the client already disconnected.
             if theta is not None and conf is not None and conf < theta:
+                if await request.is_disconnected():
+                    return
                 escalated, tier = True, "rag-backup"
                 context = retrieval.context_for(corpus.id, doc_ids)
                 yield ("data: " + json.dumps({"escalate": True, "confidence": conf,
@@ -160,24 +176,38 @@ def chat_stream(
                 yield ("data: " + json.dumps({"delta": "\n\n_(cartridge was unsure — verifying "
                                               "with the full documents)_\n\n"}) + "\n\n")
                 bhold = {"m": None}
-                yield from _forward(f"{config.INFERENCE_SERVICE_URL}/rag_query_stream",
-                                    {"context": context, "question": req.question,
-                                     "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history},
-                                    bhold)
+                for frame in _forward(f"{config.INFERENCE_SERVICE_URL}/rag_query_stream",
+                                      {"context": context, "question": req.question,
+                                       "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history},
+                                      bhold):
+                    if await request.is_disconnected():
+                        return
+                    yield frame
                 if bhold["m"]:
                     metrics_final = bhold["m"]               # shown answer = backup; report ITS metrics
+            if metrics_final is not None:
+                metrics_final = {**metrics_final, "tier": tier, "escalated": escalated}
+                # tenant_id attributes this served query to the corpus's tenant for per-tenant billing.
+                measurements.record(metrics_final, None, tenant_id=corpus.tenant_id)
+                done_emitted = True
+                yield ("data: " + json.dumps({"done": True, "metrics": metrics_final}) + "\n\n")
         except httpx.HTTPError as e:
             # head already went out 200 -> report the GPU-side failure IN-BAND, not a silent truncate.
             yield ("data: " + json.dumps({"error": f"inference service failed ({type(e).__name__})"})
                    + "\n\n")
+            done_emitted = True  # an in-band error is a terminal frame; don't also synthesize a done
             return
         except KeyError as e:            # context_for got an id not in the corpus
             yield ("data: " + json.dumps({"error": str(e)}) + "\n\n")
+            done_emitted = True
             return
-        if metrics_final is not None:
-            metrics_final = {**metrics_final, "tier": tier, "escalated": escalated}
-            measurements.record(metrics_final, None)          # feed the demo's measured aggregate
-            yield ("data: " + json.dumps({"done": True, "metrics": metrics_final}) + "\n\n")
+        finally:
+            # A client must NEVER hang waiting for a terminal frame. If we didn't produce a real done
+            # (or an in-band error) — e.g. the ml-service returned no metrics — synthesize a terminal
+            # done with null metrics so the reader always resolves. (On disconnect we return early
+            # WITHOUT emitting, since there's no client left to receive it.)
+            if not done_emitted and not await request.is_disconnected():
+                yield ("data: " + json.dumps({"done": True, "metrics": None}) + "\n\n")
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
