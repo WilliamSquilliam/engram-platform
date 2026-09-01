@@ -37,7 +37,9 @@ function AcceptInviteInner() {
     setBusy(true);
     try {
       const res = await api.acceptInvite(token, password, name || undefined);
-      setToken(res.access_token);
+      // Fresh signup: keep them signed in on this device (persistent store; token
+      // lifetime is the backend default — they can pick session-only next login).
+      setToken(res.access_token, true);
       router.push("/");
     } catch (err: any) {
       setError(err.message || "Couldn't accept this invite.");

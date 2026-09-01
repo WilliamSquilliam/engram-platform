@@ -5,7 +5,7 @@ on `get_current_user`, so that swap stays contained."""
 import datetime
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from ..config import (
     FRONTEND_URL,
     GOOGLE_ENABLED,
     GOOGLE_REDIRECT_URI,
+    JWT_REMEMBER_EXPIRE_MIN,
     PASSWORD_RESET_EXPIRE_HOURS,
 )
 from ..deps import get_current_user, get_db
@@ -197,13 +198,17 @@ def reset_password(request: Request, req: ResetPasswordReq, db: Session = Depend
 
 @router.post("/login", response_model=TokenResp)
 @limiter.limit("10/minute")
-def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
+          remember_me: bool = Form(False), db: Session = Depends(get_db)):
+    """`remember_me` (an extra form field beside the OAuth2 pair) mints the long-lived
+    "remember me on this device" session; the client pairs it with persistent storage."""
     user = db.query(User).filter(User.email == form.username).first()
     # Burns the same PBKDF2 time when the email is unknown, so response timing
     # doesn't reveal which addresses have accounts.
     if not verify_password_or_burn(form.password, user.hashed_password if user else None):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password")
-    return TokenResp(access_token=create_access_token(user.id, user.tenant_id))
+    expire = JWT_REMEMBER_EXPIRE_MIN if remember_me else None
+    return TokenResp(access_token=create_access_token(user.id, user.tenant_id, expire_min=expire))
 
 
 @router.get("/me", response_model=UserResp)

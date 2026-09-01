@@ -61,9 +61,11 @@ def verify_password_or_burn(password: str, stored: str | None) -> bool:
     return verify_password(password, stored)
 
 
-def create_access_token(user_id: str, tenant_id: str) -> str:
+def create_access_token(user_id: str, tenant_id: str, *, expire_min: int | None = None) -> str:
+    """Mint a session JWT. `expire_min` overrides the default lifetime — the login route
+    passes JWT_REMEMBER_EXPIRE_MIN for a "remember me" session; policy stays at the caller."""
     now = datetime.datetime.now(datetime.UTC)
-    exp = now + datetime.timedelta(minutes=JWT_EXPIRE_MIN)
+    exp = now + datetime.timedelta(minutes=expire_min if expire_min is not None else JWT_EXPIRE_MIN)
     return jwt.encode({"sub": user_id, "tid": tenant_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALG)
 
 

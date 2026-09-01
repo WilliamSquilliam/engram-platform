@@ -35,15 +35,23 @@ export const API_URL =
     ? (typeof window !== "undefined" ? window.location.origin : "")
     : RAW_API_URL || "http://localhost:8000";
 
+// "Remember me on this device" is real on both ends: remembered sessions go to
+// localStorage (survive a browser restart) and the backend mints a 30-day JWT;
+// non-remembered go to sessionStorage (gone when the browser closes) with the
+// default short JWT. getToken prefers the session copy (it's the fresher login).
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("token");
+  return sessionStorage.getItem("token") || localStorage.getItem("token");
 }
-export function setToken(t: string) {
-  localStorage.setItem("token", t);
+export function setToken(t: string, remember: boolean) {
+  const dst = remember ? localStorage : sessionStorage;
+  const other = remember ? sessionStorage : localStorage;
+  dst.setItem("token", t);
+  other.removeItem("token"); // never leave a stale token in the other store
 }
 export function clearToken() {
   localStorage.removeItem("token");
+  sessionStorage.removeItem("token");
 }
 
 // Invite / reset links carry their one-time token in the URL FRAGMENT (#token=..., what the
@@ -102,10 +110,11 @@ export const api = {
       headers: JSON_HEADERS,
       body: JSON.stringify({ email, password, tenant_name }),
     }),
-  login: async (email: string, password: string): Promise<TokenResponse> => {
+  login: async (email: string, password: string, rememberMe = false): Promise<TokenResponse> => {
     const form = new URLSearchParams();
     form.set("username", email);
     form.set("password", password);
+    form.set("remember_me", String(rememberMe)); // backend mints a 30-day JWT when true
     const res = await fetch(`${API_URL}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },

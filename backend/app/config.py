@@ -64,6 +64,9 @@ INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 JWT_ALG = "HS256"
 JWT_EXPIRE_MIN = int(os.environ.get("JWT_EXPIRE_MIN", "1440"))
+# "Remember me on this device": the long-lived session minted only when login asks for it
+# (remember_me form field). Default 30 days; the normal session stays JWT_EXPIRE_MIN.
+JWT_REMEMBER_EXPIRE_MIN = int(os.environ.get("JWT_REMEMBER_EXPIRE_MIN", "43200"))
 
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
 

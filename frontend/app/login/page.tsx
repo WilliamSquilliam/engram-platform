@@ -29,6 +29,7 @@ export default function LoginPage() {
   const [mode, setMode] = useState<"login" | "request">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
@@ -46,7 +47,9 @@ export default function LoginPage() {
   useEffect(() => {
     const t = new URLSearchParams(window.location.hash.slice(1)).get("token");
     if (t) {
-      setToken(t);
+      // Google round-trip: no remember choice rides the OAuth redirect, so store
+      // persistently (the token's lifetime is still the backend's default).
+      setToken(t, true);
       router.push("/");
       return;
     }
@@ -63,8 +66,8 @@ export default function LoginPage() {
     setError("");
     setBusy(true);
     try {
-      const res = await api.login(email, password);
-      setToken(res.access_token);
+      const res = await api.login(email, password, remember);
+      setToken(res.access_token, remember);
       router.push("/");
     } catch (err: any) {
       setError(err.message || "Failed");
@@ -136,6 +139,16 @@ export default function LoginPage() {
                     required
                   />
                 </div>
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-400">
+                  <input
+                    data-testid="remember-me"
+                    type="checkbox"
+                    checked={remember}
+                    onChange={(e) => setRemember(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                  />
+                  Remember me on this device
+                </label>
                 {error && (
                   <p data-testid="auth-error" className="text-sm text-red-400">
                     {error}
