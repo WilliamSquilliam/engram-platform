@@ -125,21 +125,20 @@ export type MemberRole = "admin" | "member";
 export interface Member {
   id: string;
   email: string;
-  name: string | null;
   role: MemberRole;
-  // "active" once they've accepted; "invited" while an invite is outstanding.
+  is_active?: boolean;
+  name?: string | null;
   status?: "active" | "invited" | string;
   created_at?: string;
 }
 
-// An outstanding invite returned by POST /admin/invites. `invite_link` is shown to copy
-// because outbound email may be gated off in some environments.
+// A pending (unaccepted) invite as listed under GET /admin/members. No token/link is
+// re-exposed here — the accept link is shown once, at creation (POST /admin/invites -> a
+// gated {status, invite_link} where the link is present only when EMAIL_BACKEND=none).
 export interface Invite {
   id: string;
   email: string;
   role: MemberRole;
-  invite_link: string;
-  expires_at?: string;
   created_at?: string;
 }
 

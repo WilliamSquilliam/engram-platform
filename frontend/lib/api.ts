@@ -124,11 +124,12 @@ export const api = {
     }),
 
   // --- Team management (tenant-admin only) -------------------------------------------------------
-  listMembers: () => req<Member[]>("/admin/members"),
-  // Outstanding (unaccepted) invites — lets an admin re-copy or revoke a pending link.
-  listInvites: () => req<Invite[]>("/admin/invites"),
+  // GET /admin/members returns the tenant's members AND its still-pending invites in one payload.
+  listMembers: () => req<{ members: Member[]; invites: Invite[] }>("/admin/members"),
+  // POST /admin/invites returns a gated link (present only when EMAIL_BACKEND=none; otherwise it's
+  // emailed and omitted). The accept link is shown once here, never re-listed.
   createInvite: (email: string, role: MemberRole) =>
-    req<Invite>("/admin/invites", {
+    req<{ status: string; invite_link?: string | null }>("/admin/invites", {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({ email, role }),

@@ -48,18 +48,16 @@ export default function TeamPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<MemberRole>("member");
   const [inviting, setInviting] = useState(false);
-  const [newInvite, setNewInvite] = useState<Invite | null>(null);
+  const [newInvite, setNewInvite] =
+    useState<{ email: string; role: MemberRole; link: string | null } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      // Invites list is optional in the contract; tolerate a backend that doesn't expose it yet.
-      const [ms, ivs] = await Promise.all([
-        api.listMembers(),
-        api.listInvites().catch(() => [] as Invite[]),
-      ]);
-      setMembers(ms);
-      setInvites(ivs);
+      // One call: /admin/members returns both the members and the tenant's pending invites.
+      const data = await api.listMembers();
+      setMembers(data.members);
+      setInvites(data.invites);
       setError("");
     } catch (err: any) {
       setError(err.message || "Couldn't load your team.");
@@ -96,8 +94,8 @@ export default function TeamPage() {
     setError("");
     setInviting(true);
     try {
-      const inv = await api.createInvite(inviteEmail, inviteRole);
-      setNewInvite(inv);
+      const res = await api.createInvite(inviteEmail, inviteRole);
+      setNewInvite({ email: inviteEmail, role: inviteRole, link: res.invite_link ?? null });
       setInviteEmail("");
       setInviteRole("member");
       await load();
@@ -167,19 +165,27 @@ export default function TeamPage() {
               data-testid="invite-link-panel"
               className="rounded-md border border-slate-800 bg-slate-950 p-3"
             >
-              <p className="mb-2 text-xs text-slate-400">
-                Invite for <span className="text-slate-200">{newInvite.email}</span> ({ROLE_LABEL[newInvite.role]}).
-                Share this link:
-              </p>
-              <div className="flex items-center gap-2">
-                <code
-                  data-testid="invite-link"
-                  className="min-w-0 flex-1 truncate rounded bg-slate-800 px-2 py-1.5 text-xs text-slate-100"
-                >
-                  {newInvite.invite_link}
-                </code>
-                <CopyButton value={newInvite.invite_link} testId="invite-link-copy" />
-              </div>
+              {newInvite.link ? (
+                <>
+                  <p className="mb-2 text-xs text-slate-400">
+                    Invite for <span className="text-slate-200">{newInvite.email}</span> ({ROLE_LABEL[newInvite.role]}).
+                    Email is off, so share this link:
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code
+                      data-testid="invite-link"
+                      className="min-w-0 flex-1 truncate rounded bg-slate-800 px-2 py-1.5 text-xs text-slate-100"
+                    >
+                      {newInvite.link}
+                    </code>
+                    <CopyButton value={newInvite.link} testId="invite-link-copy" />
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-slate-400">
+                  Invite emailed to <span className="text-slate-200">{newInvite.email}</span> ({ROLE_LABEL[newInvite.role]}).
+                </p>
+              )}
             </div>
           )}
         </CardBody>
@@ -245,7 +251,6 @@ function PendingInviteRow({ invite, onChanged }: { invite: Invite; onChanged: ()
         <div className="text-xs text-slate-400">Invited · {ROLE_LABEL[invite.role] || invite.role}</div>
       </div>
       <div className="flex items-center gap-2">
-        <CopyButton value={invite.invite_link} testId="pending-invite-copy" />
         <Button
           type="button"
           variant="danger"
