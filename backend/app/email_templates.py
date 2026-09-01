@@ -3,8 +3,8 @@
 Each builder returns (subject, text, html): a plain-text part for clients that want it
 and an inline-styled HTML card for everyone else (email clients ignore <style> blocks,
 so every style is inline — that's the norm for email, not a shortcut). The brand mark is
-TEXT ("Engram Dynamics" in the brand indigo), deliberately not an <img>: remote images
-are blocked by default in most clients and a broken logo reads worse than no logo.
+the landing site's hosted PNG lockup (sig-logo.png — PNG because Gmail strips SVG), with
+the name as alt text so clients that block remote images still show the brand.
 """
 from __future__ import annotations
 
@@ -30,8 +30,9 @@ def _layout(heading: str, intro: str, button_label: str, button_url: str, note: 
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
              style="max-width:480px;background:#ffffff;border-radius:12px;padding:36px 40px;
                     font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-        <tr><td style="padding-bottom:24px;">
-          <span style="font-size:17px;font-weight:700;color:{_INDIGO};letter-spacing:.2px;">Engram Dynamics</span>
+        <tr><td align="center" style="padding-bottom:24px;">
+          <img src="https://engramdynamics.org/sig-logo.png" alt="Engram Dynamics" width="104"
+               style="display:block;width:104px;height:auto;border:0;" />
         </td></tr>
         <tr><td style="font-size:21px;font-weight:600;color:{_TEXT};padding-bottom:12px;">{h(heading)}</td></tr>
         <tr><td style="font-size:15px;line-height:1.6;color:{_TEXT};padding-bottom:28px;">{h(intro)}</td></tr>
