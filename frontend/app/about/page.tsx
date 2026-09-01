@@ -45,7 +45,6 @@ export default function AboutPage() {
           <span>Engram Dynamics</span>
         </Link>
         <nav className="flex items-center gap-5 text-sm text-slate-400">
-          <Link href="/demo" className="hover:text-slate-100">Cost demo</Link>
           <Link href="/login" className="hover:text-slate-100">Sign in</Link>
         </nav>
       </header>
@@ -67,12 +66,6 @@ export default function AboutPage() {
             className="rounded-md bg-slate-100 px-5 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-white"
           >
             Get started
-          </Link>
-          <Link
-            href="/demo"
-            className="rounded-md border border-slate-700 px-5 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-slate-800"
-          >
-            See the cost comparison
           </Link>
         </div>
       </section>

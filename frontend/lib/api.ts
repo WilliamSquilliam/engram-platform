@@ -9,9 +9,7 @@ import type {
   CompareResult,
   ConnectorsResponse,
   Corpus,
-  CostComparison,
   Document,
-  Economics,
   Invite,
   Job,
   Member,
@@ -307,13 +305,6 @@ export const api = {
       headers: JSON_HEADERS,
       body: JSON.stringify({ question, k }),
     }),
-  // Per-corpus training cost + break-even.
-  economics: (id: string, queriesPerMonth = 100_000) =>
-    req<Economics>(`/corpora/${id}/economics?queries_per_month=${queriesPerMonth}`),
-  costComparison: (corpusTokens: number, queriesPerMonth: number) =>
-    req<CostComparison>(
-      `/metrics/cost-comparison?corpus_tokens=${corpusTokens}&queries_per_month=${queriesPerMonth}`
-    ),
   // Token-streaming compare side (SSE over fetch — EventSource can't POST). Emits parsed
   // events: {head, sources, used_docs} -> {delta} xN -> {done, metrics} -> {summary, cost_per_query}.
   compareStream: async (

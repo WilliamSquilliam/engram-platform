@@ -1,7 +1,7 @@
 "use client";
 // Global app chrome (Gemini-style): a fixed top bar + a collapsible left sidebar
 // that lists corpora and lets you create / switch / delete them. Wraps the whole
-// app from the root layout; renders bare (no chrome) on /login and /demo.
+// app from the root layout; renders bare (no chrome) on the public pages (login/about/auth).
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
@@ -9,7 +9,7 @@ import { api, getToken, clearToken, notifyCorporaChanged, CORPORA_CHANGED } from
 import { Button, cn } from "@/components/ui";
 
 // Full-screen auth + marketing pages render without the app chrome (no sidebar/top bar).
-const BARE = ["/login", "/demo", "/about", "/accept-invite", "/forgot-password", "/reset-password"];
+const BARE = ["/login", "/about", "/accept-invite", "/forgot-password", "/reset-password"];
 const STATUS_DOT: Record<string, string> = {
   new: "bg-slate-300",
   training: "bg-amber-400 animate-pulse",
@@ -170,13 +170,6 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
                 data-testid="about-link"
               >
                 About
-              </Link>
-              <Link
-                href="/demo"
-                className="block rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
-                data-testid="demo-link"
-              >
-                Cost demo
               </Link>
             </div>
           </aside>

@@ -98,7 +98,7 @@ export default function LoginPage() {
         <CardHeader>
           <h1 className="text-xl font-semibold">Engram Smart CAG</h1>
           <p className="text-sm text-slate-500">
-            {mode === "login" ? "Sign in to your tenant" : "Request access (invite-only)"}
+            {mode === "login" ? "Sign in" : "Request access (invite-only)"}
           </p>
         </CardHeader>
         <CardBody>
@@ -216,7 +216,7 @@ export default function LoginPage() {
                 />
               </div>
               <div>
-                <Label>What are you hoping to do? (optional)</Label>
+                <Label>Describe your company and needs (optional)</Label>
                 <textarea
                   data-testid="request-reason"
                   value={reqReason}
@@ -252,14 +252,9 @@ export default function LoginPage() {
             >
               {mode === "login" ? "Need access? Request an invite" : "Have an account? Sign in"}
             </button>
-            <div className="flex items-center gap-4 text-sm">
-              <a href="/about" data-testid="about-public-link" className="text-slate-400 hover:text-slate-200">
-                About
-              </a>
-              <a href="/demo" data-testid="demo-public-link" className="text-emerald-400 hover:underline">
-                Cost comparison →
-              </a>
-            </div>
+            <a href="/about" data-testid="about-public-link" className="text-sm text-slate-400 hover:text-slate-200">
+              About
+            </a>
           </div>
         </CardBody>
       </Card>

@@ -189,55 +189,6 @@ export interface CompareResult {
   measured_on?: { model: string; instance: string };
 }
 
-// Measured aggregate over recent live queries (the /demo page's real numbers).
-export interface MeasuredSummary {
-  measured: boolean;
-  n: number;
-  model: string;
-  instance: string;
-  cart?: { latency_ms: number | null; prompt_tokens: number | null; resident_kv_tokens: number | null; cost_per_query: number | null };
-  rag?: { latency_ms: number | null; prompt_tokens: number | null; cost_per_query: number | null };
-  savings?: {
-    faster_than_rag_x: number | null;
-    fewer_prefill_tokens_x: number | null;
-    cheaper_than_rag_x: number | null;
-  };
-}
-
-export interface Economics {
-  trained: boolean;
-  n_cartridges: number;
-  corpus_tokens: number;
-  train_seconds: number | null;
-  gpu_hourly_ondemand: number;
-  gpu_hourly_spot: number;
-  train_cost_ondemand: number;
-  train_cost_spot: number;
-  cost_per_cart_ondemand: number | null;
-  queries_per_month: number;
-  per_query: { everyday: number; rag: number };
-  per_query_measured?: boolean; // true when per_query came from the live serving path, not the model
-  breakeven_vs_rag: number | null;
-}
-
-export interface CostComparison {
-  inputs: { corpus_tokens: number; queries_per_month: number };
-  strategies: {
-    key: string;
-    label: string;
-    per_query: number | null;
-    per_month: number | null;
-    feasible: boolean;
-    quality: string;
-    note: string;
-  }[];
-  savings: {
-    vs_rag_x: number | null;
-    vs_rag_pct: number | null;
-  };
-  measured: MeasuredSummary; // real per-query numbers from this deployment (measured.measured=false until first query)
-}
-
 // A saved fleet scale-test run. `points` is the per-level series the ramp produced
 // ({ u, cart:{qps,ttft,lat,...}, rag:{...} }) — stored verbatim, so typed loosely.
 export interface ScaleRun {
