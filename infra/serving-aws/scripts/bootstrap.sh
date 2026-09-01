@@ -15,7 +15,8 @@
 #   engram-serve.service    -> uvicorn vllm_inference:app :8002  (vLLM resident-KV serve)
 #
 # Inputs arrive as environment variables (provision.sh exports them into the SSM
-# command). Model weights pull on the first serve-engine start (HF cache on the NVMe).
+# command). Model weights pull on the first serve-engine start (HF cache on the EBS
+# root so they survive stop/start; the cart hot-mirror rides the ephemeral NVMe).
 # ============================================================================
 set -euo pipefail
 : "${HOME:=/root}"; export HOME   # cloud-init/SSM runs with no HOME; venvs + HF cache need it
@@ -36,7 +37,16 @@ VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.90}"    # single-tenant serve box: giv
 VLLM_TORCH_DTYPE="${VLLM_TORCH_DTYPE:-auto}"      # 'auto' for pre-quantized (FP8) checkpoints
 APP_DIR="/opt/engram"
 VENV="/opt/engram/venv"
-WORK_NVME="/opt/engram/work"                      # HF cache + local cart mirror live on the instance store / big EBS
+# Two storage tiers, deliberately split:
+#   WORK_EBS  (EBS root, persistent)  — HF model weights cache: survives stop/start, so an
+#             idle-stopped box restarts without re-downloading ~70GB.
+#   NVME_DIR  (instance store, EPHEMERAL, ~3.8TB on g6e.12xlarge) — cart hot-mirror +
+#             registry scratch: loss-tolerant (S3 is the durable cart tier; the mirror
+#             re-warms), so the wipe-on-stop semantics are fine and the space is huge.
+#             Mounted at every boot by engram-nvme.service (installed below); on an
+#             instance type with no instance store it stays a plain dir on EBS.
+WORK_EBS="/opt/engram/work"
+NVME_DIR="/opt/engram/nvme"
 
 log(){ echo "[bootstrap] $*"; }
 
@@ -47,14 +57,68 @@ log(){ echo "[bootstrap] $*"; }
 log "installing base packages (python venv, awscli)"
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -y -qq || true
-sudo apt-get install -y -qq python3-venv python3-pip unzip >/dev/null 2>&1 || true
+sudo apt-get install -y -qq python3-venv python3-pip unzip mdadm >/dev/null 2>&1 || true
 command -v aws >/dev/null 2>&1 || { sudo snap install aws-cli --classic >/dev/null 2>&1 || sudo apt-get install -y -qq awscli >/dev/null 2>&1 || true; }
 
 # ---------------------------------------------------------------------------
 # 1. Fetch + unpack the install bundle (wheel + ml_service/ + this script's peers).
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 0.5 Instance-store NVMe mount (ephemeral cart-cache tier). Instance store is
+# wiped on every stop/start, so mounting is a boot-time job, not a one-time one:
+# install a script + oneshot systemd unit that formats-if-blank and mounts at
+# every boot, RAID0-ing multiple devices into one big volume (2x1900GB on
+# g6e.12xlarge). The app units below order After= this unit.
+# ---------------------------------------------------------------------------
+log "installing NVMe instance-store mount unit"
+sudo mkdir -p "$APP_DIR/bin"
+sudo tee "$APP_DIR/bin/mount-nvme.sh" >/dev/null <<'MOUNT'
+#!/usr/bin/env bash
+# Mount the EPHEMERAL NVMe instance store at /opt/engram/nvme (cart hot-mirror tier).
+# Runs at every boot (engram-nvme.service): the devices come back blank after a stop.
+# No instance store on this instance type -> exit 0 and the path stays a plain EBS dir.
+set -euo pipefail
+MNT=/opt/engram/nvme
+mkdir -p "$MNT"
+mountpoint -q "$MNT" && exit 0
+mapfile -t DEVS < <(lsblk -dno NAME,MODEL | awk '/Instance Storage/ {print "/dev/"$1}')
+if [ "${#DEVS[@]}" -eq 0 ]; then
+  echo "[mount-nvme] no instance-store NVMe found; $MNT stays on the EBS root"
+  exit 0
+fi
+DEV="${DEVS[0]}"
+if [ "${#DEVS[@]}" -gt 1 ]; then
+  # RAID0 for one big cache volume — fine here because this tier is loss-tolerant
+  # (S3 holds the durable carts; the mirror re-warms on demand).
+  DEV=/dev/md0
+  mdadm --create "$DEV" --level=0 --force --run \
+    --raid-devices="${#DEVS[@]}" "${DEVS[@]}" >/dev/null 2>&1 || true
+fi
+blkid "$DEV" >/dev/null 2>&1 || mkfs.ext4 -q -L engram-nvme "$DEV"
+mount "$DEV" "$MNT"
+mkdir -p "$MNT/cart_cache" "$MNT/cartridge_registry"
+echo "[mount-nvme] mounted $DEV at $MNT ($(df -h --output=size "$MNT" | tail -1 | tr -d ' '))"
+MOUNT
+sudo chmod +x "$APP_DIR/bin/mount-nvme.sh"
+sudo tee /etc/systemd/system/engram-nvme.service >/dev/null <<UNIT
+[Unit]
+Description=Engram NVMe instance-store mount (ephemeral cart-cache tier)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$APP_DIR/bin/mount-nvme.sh
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable engram-nvme.service
+sudo systemctl restart engram-nvme.service
+
 log "fetching bundle $BUNDLE_S3_URI"
-sudo mkdir -p "$APP_DIR" "$WORK_NVME"
+sudo mkdir -p "$APP_DIR" "$WORK_EBS"
 sudo chown -R "$(id -u)":"$(id -g)" "$APP_DIR"
 tmp="$(mktemp -d)"
 aws s3 cp "$BUNDLE_S3_URI" "$tmp/bundle.tgz" --region "$AWS_REGION"
@@ -125,16 +189,18 @@ CARTRIDGE_STORE_BUCKET=$CART_BUCKET
 CARTRIDGE_STORE_PREFIX=$CART_STORE_PREFIX
 AWS_REGION=$AWS_REGION
 AWS_DEFAULT_REGION=$AWS_REGION
-# --- caches + registry on the big local volume (NOT the container layer / tmpfs) ---
-CART_CACHE_DIR=$WORK_NVME/cart_cache
-CARTRIDGE_REGISTRY_DIR=$WORK_NVME/cartridge_registry
-HF_HOME=$WORK_NVME/hf
+# --- storage split: weights persist (EBS), cart caches go big+fast (NVMe) ---
+# Cart mirror + registry on the ephemeral instance store (engram-nvme.service);
+# HF weights on the EBS root so a stop/start never re-downloads the model.
+CART_CACHE_DIR=$NVME_DIR/cart_cache
+CARTRIDGE_REGISTRY_DIR=$NVME_DIR/cartridge_registry
+HF_HOME=$WORK_EBS/hf
 HF_HUB_DISABLE_PROGRESS_BARS=1
 # The connector crosses the vLLM EngineCore subprocess boundary (cart KV serialization).
 VLLM_ALLOW_INSECURE_SERIALIZATION=1
 PYTHONUNBUFFERED=1
 ENV
-sudo mkdir -p "$WORK_NVME/cart_cache" "$WORK_NVME/cartridge_registry" "$WORK_NVME/hf"
+sudo mkdir -p "$NVME_DIR/cart_cache" "$NVME_DIR/cartridge_registry" "$WORK_EBS/hf"
 
 # ---------------------------------------------------------------------------
 # 4. systemd units. Both run uvicorn from the venv with the ml_service dir on the
@@ -145,8 +211,8 @@ log "installing systemd units"
 sudo tee /etc/systemd/system/engram-onboard.service >/dev/null <<UNIT
 [Unit]
 Description=Engram onboarding worker (ml_service app:app, :8001)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target engram-nvme.service
+Wants=network-online.target engram-nvme.service
 
 [Service]
 Type=simple
@@ -166,8 +232,8 @@ UNIT
 sudo tee /etc/systemd/system/engram-serve.service >/dev/null <<UNIT
 [Unit]
 Description=Engram vLLM Inference Service (ml_service vllm_inference:app, :8002)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target engram-nvme.service
+Wants=network-online.target engram-nvme.service
 
 [Service]
 Type=simple

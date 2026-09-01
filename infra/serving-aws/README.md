@@ -71,6 +71,19 @@ The box is on-demand and the model weights persist on the EBS root volume, so st
 idle and start it later — no re-download, and the private IP (hence the two service URLs)
 is stable across the cycle.
 
+### Disk layout (two tiers, deliberately split)
+
+| Volume | Size | Persistence | Holds |
+|---|---|---|---|
+| EBS root (gp3, `root_volume_gb`) | 300 GB default | survives stop/start | OS + venv + **HF model weights** (~70 GB) |
+| NVMe instance store | ~3.8 TB on g6e.12xlarge (2×1900, RAID0) | **wiped on stop** | cart hot-mirror + registry scratch |
+
+`engram-nvme.service` (installed by bootstrap) re-formats and mounts the instance store at
+`/opt/engram/nvme` on **every boot** — after a stop/start the mirror comes back empty and
+re-warms from S3 on demand, which is exactly the loss-tolerant tier the cart store is
+designed for. On an instance type with no instance store the path stays a plain EBS dir
+and everything still works, just with less hot-cache capacity.
+
 ```bash
 ID=$(terraform output -raw instance_id)
 aws ec2 stop-instances  --instance-ids "$ID" --profile Engram-Dynamics   # stop paying compute
