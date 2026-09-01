@@ -144,6 +144,11 @@ class Document(Base):
     # can tell the user WHY a file didn't onboard.
     parse_error: Mapped[str | None] = mapped_column(String, nullable=True)
     onboard_status: Mapped[str] = mapped_column(String, default="pending")  # pending|onboarding|ready|failed
+    # One-sentence LLM description written at onboarding (Feature 1) — what the doc is + what it
+    # contains. Nullable: null until the (best-effort, flag-gated) describe pass fills it, and it
+    # STAYS null if descriptions are off or the pass fails (onboarding still succeeds either way).
+    # Also indexed into retrieval as metadata (retrieval.py); never served (the cart holds the doc).
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
     corpus: Mapped["Corpus"] = relationship(back_populates="documents")

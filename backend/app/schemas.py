@@ -257,6 +257,10 @@ class DocumentResp(BaseModel):
     # parsing hasn't run or succeeded. Lets the wizard show WHY a file didn't onboard.
     parse_error: str | None = None
     onboard_status: str = "pending"
+    # One-sentence LLM description written at onboarding (Feature 1); null until the best-effort
+    # describe pass fills it (or if descriptions are off / the pass failed). Shown as a secondary
+    # line in the Documents tab when present.
+    description: str | None = None
 
 
 # Wizard step values, single source of truth for validation.

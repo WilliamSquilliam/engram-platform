@@ -138,13 +138,22 @@ def price_everyday() -> float:
 # place so a tweak updates every estimate. Env-overridable like the rest of this module.
 ONBOARD_SECONDS_PER_DOC = float(os.environ.get("ONBOARD_SECONDS_PER_DOC", "8.0"))   # est. GPU s / doc
 ONBOARD_CART_GB_PER_DOC = float(os.environ.get("ONBOARD_CART_GB_PER_DOC", "0.05"))  # est. cart storage / doc
+# Extra GPU seconds/doc when the LLM-description pass runs at onboarding (Feature 1). Single source of
+# truth for that term so a tweak updates every estimate; env-overridable like the rest of this module.
+DESCRIBE_S_PER_DOC = float(os.environ.get("DESCRIBE_S_PER_DOC", "0.3"))
 
 
 def onboard_estimate(n_documents: int) -> dict:
     """Coarse pre-run sizing for the review step: estimated onboarding wall-clock + GPU $ from the
     per-doc constants above x the on-demand GPU rate. Deliberately rough — the real figures land on
-    the corpus after the run (see /corpora/{id}/economics)."""
-    est_seconds = n_documents * ONBOARD_SECONDS_PER_DOC
+    the corpus after the run (see /corpora/{id}/economics).
+
+    When the LLM-description feature is on (config.DOC_DESCRIPTIONS_ENABLED) the estimate adds
+    DESCRIBE_S_PER_DOC per doc (the one-sentence description pass runs on the same GPU right after
+    the carts build), so both est_seconds and the derived cost reflect it."""
+    from . import config
+    per_doc = ONBOARD_SECONDS_PER_DOC + (DESCRIBE_S_PER_DOC if config.DOC_DESCRIPTIONS_ENABLED else 0.0)
+    est_seconds = n_documents * per_doc
     est_cost = training_cost(est_seconds, GPU_HOURLY_ONDEMAND)
     return {
         "est_seconds": round(est_seconds, 1),

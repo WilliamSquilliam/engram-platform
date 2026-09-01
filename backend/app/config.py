@@ -50,9 +50,27 @@ INFERENCE_MAX_TOKENS = int(os.environ.get("INFERENCE_MAX_TOKENS", "96"))
 # confidence drops below ADAPTIVE_THETA, escalate to the RAG backup (full retrieved context on
 # the same engine) and flag it in the UI. "" / unset disables escalation (pure single-cart CAG).
 ADAPTIVE_THETA = os.environ.get("ADAPTIVE_THETA", "")
-# Control-plane retrieval backend: "bm25" (pure-python, zero-dep, the default) or "pgvector" (the
-# architecture target, swapped behind retrieval.retrieve()).
-RETRIEVAL_BACKEND = os.environ.get("RETRIEVAL_BACKEND", "bm25").lower()
+# Control-plane retrieval backend: "hybrid" (the DEFAULT — industry-standard bm25s lexical + fastembed
+# dense fused by RRF, in-process, torch-free) or "fused" (the GPU-box BM25+dense+rerank pipeline).
+# "bm25" is kept as a legacy alias -> hybrid (the hand-rolled pure-python scorer it named is replaced;
+# hybrid runs lexical-only when the dense stage is off, which reproduces bm25-only behavior). "pgvector"
+# stays a documented seam. All swap behind retrieval.retrieve() — the rest of the app only sees retrieve().
+RETRIEVAL_BACKEND = os.environ.get("RETRIEVAL_BACKEND", "hybrid").lower()
+# Dense stage of the hybrid retriever: "on" (default) builds the fastembed embedder lazily; "off"
+# runs hybrid lexical-only (bm25s), skipping any model download. Tests set "off" so they never fetch
+# a model. Hybrid ALSO degrades to lexical-only automatically if fastembed import/model-load fails.
+RETRIEVAL_DENSE = os.environ.get("RETRIEVAL_DENSE", "on").lower()
+# Dense embedding model for the hybrid retriever's dense stage (fastembed / ONNX, torch-free).
+RETRIEVAL_DENSE_MODEL = os.environ.get("RETRIEVAL_DENSE_MODEL", "BAAI/bge-small-en-v1.5")
+# fastembed downloads its ONNX model on first use; keep it under DATA_DIR so it's cached across
+# process restarts instead of re-downloaded (one dir shared by every worker on the box).
+FASTEMBED_CACHE_DIR = Path(os.environ.get("FASTEMBED_CACHE_DIR", DATA_DIR / "fastembed"))
+
+# --- LLM document descriptions at onboarding (Feature 1) --------------------------------------
+# DESCRIBE_MAX_TOKENS caps each one-sentence description generation. The DEFAULT-ON flag
+# DOC_DESCRIPTIONS_ENABLED needs _flag() (defined below), so it's set further down. The per-doc time
+# estimate constant lives in metrics.py (single source of truth for the review-step sizing).
+DESCRIBE_MAX_TOKENS = int(os.environ.get("DESCRIBE_MAX_TOKENS", "60"))
 
 # Where the ML worker posts training-progress heartbeats. Locally that's this same
 # process; on AWS it's the control-plane's internal service DNS/ALB, reachable from
@@ -145,6 +163,11 @@ def _flag(name: str, default: bool) -> bool:
 
 # STARTTLS for SMTP (on by default; ports 587/25). Defined here where _flag exists.
 SMTP_STARTTLS = _flag("SMTP_STARTTLS", default=True)
+
+# LLM doc descriptions at onboarding (Feature 1), DEFAULT ON. After a wizard onboard the serving model
+# is asked for a one-sentence description of each doc, stored on the Document row (best-effort — a
+# failure never fails onboarding). Defined here (not at the top block) because _flag exists from here.
+DOC_DESCRIPTIONS_ENABLED = _flag("DOC_DESCRIPTIONS_ENABLED", default=True)
 
 
 # Open self-service registration. ON for local/dev; OFF in prod by default so a

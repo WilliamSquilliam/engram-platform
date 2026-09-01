@@ -38,6 +38,8 @@ export interface Document {
   // Human-readable reason a parse failed (only set when parse_status === "failed").
   parse_error?: string;
   onboard_status?: string;
+  // One-sentence LLM description written at onboarding; shown as a secondary line when present.
+  description?: string | null;
 }
 
 // A document-source connector (GET /connectors). `filesystem` is the built-in

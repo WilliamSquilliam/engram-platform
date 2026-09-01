@@ -21,6 +21,7 @@ then `uvicorn vllm_inference:app`. Self-test (on a GPU box, after build-corpus):
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hmac
 import inspect
 import os
@@ -327,6 +328,13 @@ _SYSTEM = ("You are a helpful assistant answering questions from the documents p
            "title on its first line — when your answer draws on a document, mention that title "
            "naturally (e.g. 'According to \"...\"'). If the documents do not contain the answer, "
            "say so briefly instead of guessing.")
+
+
+# The fixed instruction the /describe endpoint serves against each doc's resident cart — a single
+# short sentence saying what the document is and what it contains (used as retrieval metadata by the
+# control plane, and shown as a secondary line in the Documents tab).
+_DESCRIBE_INSTRUCTION = ("Describe this document in one short sentence: what it is and what "
+                         "information it contains.")
 
 
 def _chat_ids(tok, user_text: str, history: list | None = None) -> list[int]:
@@ -914,6 +922,35 @@ if _HAS_FASTAPI:
         except LookupError as e:
             raise HTTPException(404, str(e)) from e
         return {**result, "doc_ids": req.doc_ids}
+
+    class DescribeReq(BaseModel):
+        doc_ids: list[str]        # carts to describe (control plane onboarded these)
+        max_tokens: int = 60
+
+    @app.post("/describe")
+    async def describe(req: DescribeReq):
+        """Generate a one-sentence description PER doc_id from its resident CAG cart — same
+        resolve/serve path as /query (each doc's cart is served against a FIXED instruction, so the
+        model reads only that document's KV). Returns {descriptions: {doc_id: text-or-null}}. Per-doc
+        failures (missing cart, GPU error) map that id to null and NEVER fail the batch — the control
+        plane's describe pass is best-effort and onboarding must still succeed. The async engine
+        batches the concurrent per-doc requests; the sync path runs them one at a time in a
+        threadpool so the event loop stays responsive."""
+        async def _one(doc_id: str) -> str | None:
+            try:
+                if SERVE_ASYNC:
+                    out = await serve_query_async([doc_id], _DESCRIBE_INSTRUCTION, req.max_tokens)
+                else:
+                    out = await run_in_threadpool(
+                        serve_query, [doc_id], _DESCRIBE_INSTRUCTION, req.max_tokens)
+                text = (out.get("answer") or "").strip()
+                return text or None
+            except Exception as e:  # noqa: BLE001 — one bad cart must not sink the batch
+                print(f"[describe] WARN doc {doc_id!r} failed: {e}", flush=True)
+                return None
+
+        results = await asyncio.gather(*(_one(d) for d in req.doc_ids))
+        return {"descriptions": dict(zip(req.doc_ids, results))}
 
     _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 

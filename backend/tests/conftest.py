@@ -22,6 +22,9 @@ os.environ["EMAIL_BACKEND"] = "none"
 # The suite makes many register/login calls from one client IP — turn off the
 # auth rate limiter so it doesn't trip mid-suite.
 os.environ["RATELIMIT_ENABLED"] = "false"
+# Hybrid retriever: run lexical-only in tests so fastembed never downloads its ONNX model (hermetic,
+# fast). The dense stage is exercised separately/behind the same RRF fusion the lexical path uses.
+os.environ["RETRIEVAL_DENSE"] = "off"
 
 # Make the `app` package importable (platform/backend on sys.path).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

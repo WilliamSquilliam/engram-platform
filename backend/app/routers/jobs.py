@@ -64,6 +64,33 @@ def _compensate_if_deleted(corpus_id: str, tenant_id: str, run_cart_ids: list[st
         db.close()
 
 
+def _write_descriptions(db: Session, corpus_id: str, doc_ids: list[str]) -> None:
+    """Best-effort LLM-description pass (Feature 1): call the Inference Service for a one-sentence
+    description of each onboarded cart and write it to the matching Document row (by tenant-namespaced
+    cart id), then commit. FULLY contained — any exception is logged and swallowed so onboarding still
+    succeeds and the docs stay 'ready' (a null description is fine). Locally there's no inference
+    service, so the call fails fast (short client timeout) and is swallowed here."""
+    try:
+        corpus = db.get(Corpus, corpus_id)
+        if corpus is None:
+            return
+        descriptions = ml_client.inference_describe(
+            doc_ids, max_tokens=config.DESCRIBE_MAX_TOKENS).get("descriptions", {})
+        if not descriptions:
+            return
+        # Map each cart id back to its Document row (cart_id_for isn't SQL-expressible), then persist
+        # only the non-null descriptions the service returned.
+        by_cart = {cart_id_for(corpus.tenant_id, d.filename): d
+                   for d in db.query(Document).filter(Document.corpus_id == corpus_id)}
+        for cart_id, text in descriptions.items():
+            doc = by_cart.get(cart_id)
+            if doc is not None and text:
+                doc.description = text
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — descriptions are best-effort; never fail onboarding
+        logger.warning("doc-description pass failed for corpus %s: %s", corpus_id, exc)
+
+
 def _run_training(corpus_id: str, job_id: str) -> None:
     """Background worker: read docs, call the ML service, update job + corpus."""
     db = SessionLocal()
@@ -175,6 +202,12 @@ def _run_training(corpus_id: str, job_id: str) -> None:
                         ml_client.inference_invalidate([d["doc_id"] for d in docs])
                     except Exception as exc:  # noqa: BLE001 — cache purge is best-effort
                         logger.error("post-train invalidate failed for corpus %s: %s", corpus_id, exc)
+                    # LLM doc descriptions (Feature 1, flag-gated DEFAULT ON): ask the serving model for
+                    # a one-sentence description of each onboarded doc and store it on the matching
+                    # Document row. STRICTLY best-effort — any failure (no inference service locally, GPU
+                    # error) is logged and swallowed; onboarding still succeeds and docs stay "ready".
+                    if config.DOC_DESCRIPTIONS_ENABLED:
+                        _write_descriptions(db, corpus_id, [d["doc_id"] for d in docs])
         except Exception as exc:  # noqa: BLE001
             logger.exception("Training failed for corpus %s (job %s)", corpus_id, job_id)
             corpus.status = "failed"

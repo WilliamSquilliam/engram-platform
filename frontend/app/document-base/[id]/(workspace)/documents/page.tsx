@@ -45,6 +45,11 @@ export default function DocumentsPage() {
                     {d.parse_error}
                   </p>
                 )}
+                {d.description && (
+                  <p data-testid={`doc-description-${d.id}`} className="mt-0.5 text-xs text-slate-400" title={d.description}>
+                    {d.description}
+                  </p>
+                )}
               </li>
             );
           })}

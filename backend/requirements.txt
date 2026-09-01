@@ -39,3 +39,9 @@ xlrd==2.0.2
 # Legacy .doc: striprtf handles RTF-flavoured .doc; genuine OLE binary .doc converts via LibreOffice
 # (soffice) when present in the deploy image — no pure-python OLE parser is used.
 striprtf==0.0.33
+# Production hybrid retriever (control-plane, torch-free). bm25s = fast, maintained BM25 (replaces the
+# old bespoke pure-python scorer); fastembed = ONNX dense embeddings (no torch) for the dense stage.
+# fastembed downloads its small bge model on first use into config.FASTEMBED_CACHE_DIR (under DATA_DIR),
+# and the dense stage degrades to lexical-only if it's unavailable (RETRIEVAL_DENSE=off or import fail).
+bm25s==0.3.11
+fastembed==0.8.0

@@ -10,7 +10,7 @@ from ..config import MAX_REQUEST_MB, MAX_UPLOAD_MB
 from ..deps import get_current_user, get_db
 from ..models import Corpus, Document, User
 from ..parsing import SUPPORTED_EXTS, extract_text
-from ..retrieval import cart_id_for
+from ..retrieval import cart_id_for, invalidate_index
 from ..schemas import CorpusCreateReq, CorpusResp, DocumentResp
 from ..storage import safe_rel, storage
 
@@ -37,7 +37,7 @@ def _to_resp(db: Session, c: Corpus) -> CorpusResp:
 def _doc_resp(d: Document) -> DocumentResp:
     return DocumentResp(id=d.id, filename=d.filename, size=d.size,
                         parse_status=d.parse_status, parse_error=d.parse_error,
-                        onboard_status=d.onboard_status)
+                        onboard_status=d.onboard_status, description=d.description)
 
 
 def deletable_carts(db: Session, tenant_id: str, corpus_id: str,
@@ -135,6 +135,7 @@ def delete_corpus(corpus_id: str, user: User = Depends(get_current_user), db: Se
     db.delete(corpus)
     db.commit()
     storage.delete_corpus(corpus_id)
+    invalidate_index(corpus_id)  # free the in-process hybrid index for this corpus
 
     # ML-plane cleanup is BEST-EFFORT and must NOT fail the 204: the authoritative deletion (DB +
     # storage) already happened, so raising here would report failure for a delete that did occur. The

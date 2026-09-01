@@ -113,6 +113,21 @@ def inference_query(doc_ids: list[str], question: str, max_tokens: int = 96,
     return resp.json()
 
 
+def inference_describe(doc_ids: list[str], max_tokens: int = 60) -> dict:
+    """Ask the vLLM Inference Service for a one-sentence description of each doc_id, served from its
+    resident CAG cart (POST /describe). Returns {descriptions: {doc_id: text-or-null}} — the service
+    maps a per-doc failure to null and never fails the batch. Short timeout (120s): the caller's
+    describe pass is best-effort and locally there's no inference service, so the call must fail FAST
+    and be swallowed rather than hang onboarding."""
+    resp = httpx.post(
+        f"{INFERENCE_SERVICE_URL}/describe",
+        json={"doc_ids": doc_ids, "max_tokens": max_tokens},
+        timeout=120.0, headers=_ml_headers(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def inference_rag(context: str, question: str, max_tokens: int = 96,
                   history: list[dict] | None = None) -> dict:
     """Live RAG baseline on the SAME vLLM engine (measured head-to-head): prefill `context` + question,
