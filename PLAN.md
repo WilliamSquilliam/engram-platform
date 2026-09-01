@@ -357,6 +357,25 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-09-01 — Serving decision: Llama-3.3-70B (FP8) on one g6e.12xlarge, packaged as a
+  swappable serving unit.** Command A+ has no runnable path on available hardware for now, so the
+  beta serves the validated fallback: `RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic`, TP=4 on the
+  4× L40S box (the exact model+instance combo already measured in the evidence: fact-grid 16/24
+  with cart==RAG==bf16, 17.5 cart-QPS at conc-24; codec supports Llama-3 rope scaling). **The
+  swappable-unit contract:** a serving unit is anything that emits `ML_SERVICE_URL`,
+  `INFERENCE_SERVICE_URL`, `ML_AUTH_TOKEN`, and `MODEL_REGISTRY_JSON` — the only four values the
+  control plane consumes — so pivoting model/instance/cloud is a new unit with the same outputs,
+  zero product-code change. AWS implementation lives in `infra/serving-aws/` (Terraform +
+  SSM provisioning + smoke test); nothing is launched until the operator runs `terraform apply`
+  (GPU spend is a human decision). Command A+ stays the upgrade path via the registry (new tier →
+  onboard new corpora against it; existing corpora stay pinned to their model_ref).
+  **✅ Unit built + verified (same day):** `infra/serving-aws/` — Terraform (one g6e.12xlarge,
+  SSM-only access, S3 cart bucket, DLAMI pin verified live, spot toggle, account guard),
+  `provision.sh` (wheel from the sibling repo → S3 bundle → SSM bootstrap → two systemd
+  services), `smoke.sh` (engine health → compat_check → onboard a test doc → grounded query).
+  `terraform validate` clean; the emitted `MODEL_REGISTRY_JSON` parsed through the real
+  `serving.py` loader. Operator runbook in the module README. **Next human step:**
+  `terraform apply` → `provision.sh` → `smoke.sh` → paste the four env values.
 - **2026-09-01 — Local end-to-end run-up completed (closes Phase 0).** Booted the real stack
   (control plane on SQLite + Next.js dev; no GPU plane) and walked it in a browser as three
   users: waitlist request → platform-admin approve → `#token` fragment accept-invite → the full
