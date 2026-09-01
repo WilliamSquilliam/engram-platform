@@ -1,0 +1,12 @@
+# Terraform working files. State lives in the remote S3 backend (versions.tf); it
+# holds this env's generated secrets — NEVER commit it. .terraform.lock.hcl IS
+# committed (pinned provider hashes).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+# Local var overrides may carry secrets; keep them out of git.
+*.tfvars
+!example.tfvars

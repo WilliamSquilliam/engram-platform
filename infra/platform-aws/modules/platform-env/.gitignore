@@ -1,0 +1,6 @@
+# The module is consumed by the env roots; validating it standalone leaves a local
+# provider cache. Ignore the working dir; the .terraform.lock.hcl (pinned provider
+# hashes) IS committed.
+.terraform/
+crash.log
+crash.*.log
