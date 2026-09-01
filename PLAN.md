@@ -356,6 +356,24 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-09-01 — Production-readiness review + hardening pass shipped.** Three read-only Opus
+  reviews (security/isolation, backend correctness, frontend contracts) over the whole codebase.
+  **Fundamentals verified clean:** tenant isolation on every route, platform-admin gating, cart
+  namespacing completeness, migrations vs models, storage sidecar, aggregation math, API
+  contracts, no committed secrets. **17 real findings fixed** across three commits
+  (`b7b92a7`, `27cc8eb`, `13e557c`+merge `50ce5d3`), the big ones: invite/reset links were
+  entirely broken (`#token` fragment vs `?token` query — a cross-agent seam); every tenant was
+  billed the deployment-wide query volume (fixed properly: `Measurement.tenant_id`, Alembic
+  `0009`, stamped at all corpus-scoped record sites); deactivated users' JWTs kept working
+  (`is_active` now enforced); prod `validate()` now refuses `EMAIL_BACKEND=none` (link leakage)
+  and requires `ML_AUTH_TOKEN`; cross-tenant invite could overwrite an existing account (now
+  bound to the invite's tenant); per-doc status machine redesigned (parse_status = upload-time
+  fact; cancel/fail/empty-doc paths no longer stick or lie); zip-bomb/page-count parse guards;
+  chat stream always terminates + stops on client disconnect; frontend: global 401 → login
+  redirect, stream abort on unmount/corpus-switch, chat history capped, types aligned.
+  **Deferred, documented (LOW):** `ALLOWED_HOSTS` fail-fast at public launch, per-account login
+  backoff, streaming upload buffering, SSE wall-clock caps, non-stream adaptive escalation
+  (deliberately stream-only). Suite: **159 passed / 4 skipped** (+21 tests); frontend build clean.
 - **2026-08-31 — Shipped E10 + E11 dashboards.** Parallel agents (backend main tree / frontend
   worktree). Backend: `/auth/me` now returns `platform_admin`; E10 tenant `GET /admin/usage` +
   `/admin/billing`, E11 cross-tenant `GET /platform-admin/tenants` + `/platform-admin/usage`
