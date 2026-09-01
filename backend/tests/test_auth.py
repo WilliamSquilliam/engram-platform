@@ -35,6 +35,71 @@ def test_auth_config_google_disabled(client):
     assert client.get("/auth/config").json() == {"google_enabled": False}
 
 
+def _fake_google(monkeypatch, email: str):
+    """Stub the authlib seam so the /auth/google/callback logic runs without Google:
+    _require_google reads module-level GOOGLE_ENABLED + oauth, both patched here."""
+    from app.routers import auth as auth_mod
+
+    class _FakeGoogle:
+        async def authorize_access_token(self, request):
+            return {"userinfo": {"email": email, "email_verified": True, "name": "G User"}}
+
+    class _FakeOAuth:
+        google = _FakeGoogle()
+
+    monkeypatch.setattr(auth_mod, "oauth", _FakeOAuth())
+    monkeypatch.setattr(auth_mod, "GOOGLE_ENABLED", True)
+
+
+def test_google_callback_invite_only_blocks_unknown(client, monkeypatch):
+    """Invite-only mode: an unknown Google account must NOT bypass the waitlist by
+    having a workspace auto-provisioned — it bounces back with google_not_invited."""
+    from app.db import SessionLocal
+    from app.models import User
+    from app.routers import auth as auth_mod
+
+    _fake_google(monkeypatch, "stranger@example.test")
+    monkeypatch.setattr(auth_mod, "ALLOW_REGISTRATION", False)
+    r = client.get("/auth/google/callback", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert "error=google_not_invited" in r.headers["location"]
+    db = SessionLocal()
+    try:
+        assert db.query(User).filter(User.email == "stranger@example.test").first() is None
+    finally:
+        db.close()
+
+
+def test_google_callback_accepts_pending_invite(client, auth, monkeypatch):
+    """An invited teammate signing in with Google joins the INVITING tenant with the
+    invited role (invite consumed) — not a fresh workspace of their own."""
+    from app.db import SessionLocal
+    from app.models import Invite, User
+    from app.routers import auth as auth_mod
+
+    headers, admin_email = auth
+    invited = "gteammate@example.test"
+    assert client.post("/admin/invites", json={"email": invited, "role": "member"},
+                       headers=headers).status_code == 200
+
+    _fake_google(monkeypatch, invited)
+    monkeypatch.setattr(auth_mod, "ALLOW_REGISTRATION", False)
+    r = client.get("/auth/google/callback", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert "#token=" in r.headers["location"]
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == invited).first()
+        admin = db.query(User).filter(User.email == admin_email).first()
+        assert user is not None and user.tenant_id == admin.tenant_id  # joined, not new tenant
+        assert user.role == "member"
+        inv = db.query(Invite).filter(Invite.email == invited).first()
+        assert inv.accepted_at is not None  # invite consumed
+    finally:
+        db.close()
+
+
 def test_remember_me_mints_long_lived_token(client, auth):
     """'Remember me on this device' must be real server-side: the remember_me form field
     extends the JWT exp to JWT_REMEMBER_EXPIRE_MIN; a plain login stays at JWT_EXPIRE_MIN."""

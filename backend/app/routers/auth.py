@@ -252,14 +252,35 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
 
     user = db.query(User).filter(User.email == email).first()
     if user is None:
-        # First Google login for this email -> provision a tenant + admin user.
-        name = info.get("name") or email.split("@")[0]
-        tenant = Tenant(name=f"{name}'s workspace")
-        db.add(tenant)
-        db.flush()
-        user = User(tenant_id=tenant.id, email=email, hashed_password=OAUTH_NO_PASSWORD)
-        db.add(user)
-        db.commit()
+        # A pending invite for this email? Google sign-in ACCEPTS it: join the inviting
+        # tenant with the invited role (no password needed — Google verified the email).
+        # Without this, an invited teammate clicking "Continue with Google" would land in
+        # a brand-new empty workspace instead of the team that invited them.
+        invite = (
+            db.query(Invite)
+            .filter(Invite.email == email, Invite.accepted_at.is_(None))
+            .order_by(Invite.expires_at.desc())
+            .first()
+        )
+        if invite is not None and invite.expires_at > _now():
+            user = User(tenant_id=invite.tenant_id, email=email, role=invite.role,
+                        hashed_password=OAUTH_NO_PASSWORD, email_verified=True)
+            invite.accepted_at = _now()
+            db.add(user)
+            db.commit()
+        elif ALLOW_REGISTRATION:
+            # Open-registration mode only: first Google login provisions a workspace.
+            name = info.get("name") or email.split("@")[0]
+            tenant = Tenant(name=f"{name}'s workspace")
+            db.add(tenant)
+            db.flush()
+            user = User(tenant_id=tenant.id, email=email, role="admin",
+                        hashed_password=OAUTH_NO_PASSWORD, email_verified=True)
+            db.add(user)
+            db.commit()
+        else:
+            # Invite-only: an unknown Google account must not bypass the waitlist.
+            return RedirectResponse(f"{FRONTEND_URL}/login?error=google_not_invited")
 
     jwt_token = create_access_token(user.id, user.tenant_id)
     return RedirectResponse(f"{FRONTEND_URL}/login#token={jwt_token}", status_code=302)

@@ -8,6 +8,8 @@ import { Button, Input, Label, Card, CardBody, CardHeader } from "@/components/u
 const ERROR_LABELS: Record<string, string> = {
   google_auth_failed: "Google sign-in failed. Please try again.",
   google_email_unverified: "Your Google account email is not verified.",
+  google_not_invited:
+    "This Google account doesn't have access yet. Request an invite below, or use the invite link you were sent.",
 };
 
 // Official Google "G" mark, inline so there's no extra asset to ship.
