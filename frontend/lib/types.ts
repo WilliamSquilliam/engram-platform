@@ -254,3 +254,88 @@ export interface ScaleRun {
 export interface AuthConfig {
   google_enabled: boolean;
 }
+
+// --- E10 Admin Dashboard (tenant-admin) --------------------------------------------------------
+// Per-corpus usage row in GET /admin/usage.
+export interface UsageByCorpus {
+  corpus_id: string;
+  name: string;
+  queries: number;
+  documents: number;
+  storage_gb: number;
+  gpu_seconds: number;
+}
+// One point on the queries-over-time series (recharts x=date, y=queries).
+export interface UsageSeriesPoint {
+  date: string;
+  queries: number;
+}
+// GET /admin/usage — headline usage across the tenant + a time series + per-corpus breakdown.
+export interface AdminUsage {
+  queries: number;
+  documents: number;
+  storage_gb: number;
+  gpu_seconds: number;
+  n_corpora: number;
+  by_corpus: UsageByCorpus[];
+  series: UsageSeriesPoint[];
+}
+
+// GET /admin/billing — the current plan, its limits, usage-against-limits, and an estimated cost.
+// A shell for now (billing management is coming soon), so limits/usage are open-ended maps.
+export interface AdminBilling {
+  plan: string;
+  limits: Record<string, number>;
+  usage: Record<string, number>;
+  estimated_cost_usd: number;
+  currency: string;
+  period: string;
+}
+
+// --- E11 Platform Admin (Engram staff only) ----------------------------------------------------
+// A tenant row in GET /platform-admin/tenants.
+export interface Tenant {
+  id: string;
+  name: string;
+  created_at: string;
+  n_users: number;
+  n_corpora: number;
+  plan: string;
+  status: string;
+}
+
+// Cost-per-tenant row + fleet totals in GET /platform-admin/usage.
+export interface PlatformTenantUsage {
+  tenant_id: string;
+  name: string;
+  queries: number;
+  storage_gb: number;
+  gpu_seconds: number;
+  est_cost_usd: number;
+}
+export interface PlatformUsage {
+  tenants: PlatformTenantUsage[];
+  totals: {
+    queries?: number;
+    storage_gb?: number;
+    gpu_seconds?: number;
+    est_cost_usd?: number;
+    [k: string]: number | undefined;
+  };
+}
+
+// A pending waitlist entry in GET /platform-admin/access-requests.
+export interface AccessRequest {
+  id: string;
+  email: string;
+  name: string;
+  tenant_name: string;
+  reason?: string | null;
+  status: string;
+  created_at: string;
+}
+// POST /platform-admin/access-requests/{id}/approve returns a one-time invite link to share.
+export interface ApproveAccessResponse {
+  status: string;
+  invite_link?: string | null;
+}
