@@ -100,6 +100,25 @@ def test_google_callback_accepts_pending_invite(client, auth, monkeypatch):
         db.close()
 
 
+def test_forgot_password_never_leaks_link_on_send_failure(client, auth, monkeypatch):
+    """PUBLIC route: with a real email backend configured, a FAILED send (SES sandbox,
+    outage) must NOT fall back to returning the reset link — that would let anyone mint
+    another account's reset link while sends are failing. Link-in-response is dev-only
+    (EMAIL_BACKEND=none)."""
+    from app import config
+    from app import email as email_mod
+
+    _, email = auth
+    monkeypatch.setattr(config, "EMAIL_BACKEND", "ses")
+    monkeypatch.setattr(email_mod, "_send_ses",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("sandbox reject")))
+    r = client.post("/auth/forgot-password", json={"email": email})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "sent"          # uniform response preserved
+    assert body.get("reset_link") is None    # and no link leaked
+
+
 def test_remember_me_mints_long_lived_token(client, auth):
     """'Remember me on this device' must be real server-side: the remember_me form field
     extends the JWT exp to JWT_REMEMBER_EXPIRE_MIN; a plain login stays at JWT_EXPIRE_MIN."""

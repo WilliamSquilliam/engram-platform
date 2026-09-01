@@ -267,7 +267,13 @@ export default function LoginPage() {
             >
               {mode === "login" ? "Need access? Request an invite" : "Have an account? Sign in"}
             </button>
-            <a href="/about" data-testid="about-public-link" className="text-sm text-slate-400 hover:text-slate-200">
+            <a
+              href="https://engramdynamics.org"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="about-public-link"
+              className="text-sm text-slate-400 hover:text-slate-200"
+            >
               About
             </a>
           </div>

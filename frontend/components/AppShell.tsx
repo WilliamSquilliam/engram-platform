@@ -9,7 +9,7 @@ import { api, getToken, clearToken, notifyCorporaChanged, CORPORA_CHANGED } from
 import { Button, cn } from "@/components/ui";
 
 // Full-screen auth + marketing pages render without the app chrome (no sidebar/top bar).
-const BARE = ["/login", "/about", "/accept-invite", "/forgot-password", "/reset-password"];
+const BARE = ["/login", "/accept-invite", "/forgot-password", "/reset-password"];
 const STATUS_DOT: Record<string, string> = {
   new: "bg-slate-300",
   training: "bg-amber-400 animate-pulse",
@@ -164,13 +164,16 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
                   Platform Admin
                 </Link>
               )}
-              <Link
-                href="/about"
+              {/* External: the marketing/landing site is the real "about". */}
+              <a
+                href="https://engramdynamics.org"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="block rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
                 data-testid="about-link"
               >
                 About
-              </Link>
+              </a>
             </div>
           </aside>
         )}

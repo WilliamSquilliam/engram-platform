@@ -19,7 +19,7 @@ from ..config import (
     PASSWORD_RESET_EXPIRE_HOURS,
 )
 from ..deps import get_current_user, get_db
-from ..email import send_email
+from ..email import email_enabled, send_email
 from ..models import AccessRequest, Invite, PasswordReset, Tenant, User
 from ..oauth import oauth
 from ..ratelimit import limiter
@@ -166,7 +166,11 @@ def forgot_password(request: Request, req: ForgotPasswordReq, db: Session = Depe
         db.commit()
         link = _reset_link(token)
         sent = send_email(user.email, "Reset your password", f"Reset your password: {link}")
-        if not sent:  # EMAIL_BACKEND=none -> return the link so the flow completes
+        # SECURITY: this is a PUBLIC route — the link may only ride the response when no
+        # real provider is configured (dev). A configured-but-FAILED send (SES sandbox,
+        # provider outage) must return nothing, or anyone could mint themselves another
+        # account's reset link by hitting this while sends are failing.
+        if not sent and not email_enabled():
             reset_link = link
     # Uniform response whether or not the account existed.
     return LinkResp(status="sent", reset_link=reset_link)
