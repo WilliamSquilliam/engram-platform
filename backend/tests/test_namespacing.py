@@ -161,10 +161,11 @@ def test_delete_offboards_only_this_tenants_namespaced_ids(client, mock_ml):
 # --- GC scoping -------------------------------------------------------------------------------
 
 def test_gc_is_tenant_safe(client, mock_ml, monkeypatch):
-    """The store-wide GC references every document by its TENANT-NAMESPACED id. Because ids carry the
-    owning tenant's prefix, one tenant's live cart can never be misclassified as another tenant's
-    orphan: two tenants' same-named live carts are BOTH retained; only a truly unreferenced id is an
-    orphan."""
+    """The store-wide GC references every document by its TENANT-NAMESPACED id, and — because
+    prod and the UAT stage share one cart store — only ids whose tenant prefix belongs to a
+    tenant THIS DB knows are sweepable. Foreign-environment carts and legacy un-namespaced ids
+    are skipped (never delete what we can't attribute), and one tenant's live cart can never be
+    another tenant's orphan."""
     monkeypatch.setattr(config, "INTERNAL_API_TOKEN", "s3cr3t-token")
     tok = {"X-Internal-Token": "s3cr3t-token"}
     h1, h2 = _register(client), _register(client)
@@ -175,12 +176,18 @@ def test_gc_is_tenant_safe(client, mock_ml, monkeypatch):
     live2 = cart_id_for(_tenant_of(c2), "live.txt")
     assert live1 != live2
 
-    # Store holds both tenants' live carts plus one true orphan.
-    mock_ml.carts = [live1, live2, "orphan_x"]
+    # Store holds: both tenants' live carts, a TRUE local orphan (known tenant, no doc),
+    # a FOREIGN cart (unknown tenant prefix — e.g. onboarded by the UAT stage's control
+    # plane), and a legacy un-namespaced id.
+    local_orphan = cart_id_for(_tenant_of(c1), "deleted_doc.txt")
+    foreign_cart = ("f" * 32) + "__live"
+    mock_ml.carts = [live1, live2, local_orphan, foreign_cart, "orphan_x"]
     r = client.post("/internal/gc/carts", json={"confirm": False}, headers=tok)
     assert r.status_code == 200, r.text
-    # Only the unreferenced id is an orphan; NEITHER tenant's live cart is swept.
-    assert r.json()["orphans"] == ["orphan_x"]
+    # Only the locally-attributable unreferenced id is an orphan; live carts stay, the
+    # foreign cart and the unattributable legacy id are skipped, counted separately.
+    assert r.json()["orphans"] == [local_orphan]
+    assert r.json()["n_foreign_skipped"] == 2
 
 
 def _tenant_of(corpus_id) -> str:

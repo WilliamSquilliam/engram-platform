@@ -293,14 +293,18 @@ def test_gc_dry_run_then_confirm(client, auth, make_corpus, mock_ml, monkeypatch
     cid = make_corpus(headers)
     _upload(client, headers, cid, "kept.txt")
     kept = cart_id(cid, "kept.txt")
-    mock_ml.carts = [kept, "orphan_a", "orphan_b"]
+    # Orphans must be LOCALLY-ATTRIBUTABLE (known tenant prefix) to be sweepable — the
+    # shared-store rule skips foreign/legacy ids (see test_namespacing.test_gc_is_tenant_safe).
+    orphan_a = cart_id(cid, "gone_a.txt")
+    orphan_b = cart_id(cid, "gone_b.txt")
+    mock_ml.carts = [kept, orphan_a, orphan_b]
 
     # Dry run: orphans surfaced, nothing deleted.
     r = client.post("/internal/gc/carts", json={"confirm": False}, headers=tok)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["deleted"] is False
-    assert body["orphans"] == ["orphan_a", "orphan_b"]
+    assert body["orphans"] == sorted([orphan_a, orphan_b])
     assert body["n_orphans"] == 2
     assert mock_ml.offboard_ids == [] and mock_ml.invalidate_ids == []
 
@@ -308,7 +312,7 @@ def test_gc_dry_run_then_confirm(client, auth, make_corpus, mock_ml, monkeypatch
     r = client.post("/internal/gc/carts", json={"confirm": True}, headers=tok)
     assert r.status_code == 200, r.text
     assert r.json()["deleted"] is True
-    assert mock_ml.offboard_ids == [["orphan_a", "orphan_b"]]
-    assert mock_ml.invalidate_ids == [["orphan_a", "orphan_b"]]
+    assert mock_ml.offboard_ids == [sorted([orphan_a, orphan_b])]
+    assert mock_ml.invalidate_ids == [sorted([orphan_a, orphan_b])]
     assert any(row.event == "carts.gc" and row.tenant_id == "_system"
                for row in _audit_rows(tenant_filter="_system"))

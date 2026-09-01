@@ -235,6 +235,12 @@ reference platform.
 - **Add:** `app.engramdynamics.org` (frontend) + `api.engramdynamics.org` (backend) DNS at
   Cloudflare (the `app.`/`api.` scheme is already assumed in `.env.aws.example`), bring the
   mothballed stack up, CI/CD (CodeBuild→ECR→ECS exists), secrets via Secrets Manager.
+- **Two-environment shape (2026-09-02):** the platform stack is ONE Terraform module
+  instantiated twice — `env=prod` and `env=uat` — in the same account/VPC: per-env ECS services,
+  DB, secrets, S3 doc prefix, and `uat-app.`/`uat-api.` Cloudflare names; both consume the SAME
+  serving unit's four env values. Deploy flow: image → UAT (migrations rehearse on the UAT DB) →
+  click-through at uat-app → same image to prod. Serving-side rehearsals use ephemeral spot
+  serving units, never the shared box.
 - **GPU serving box (locked): one `g6e.12xlarge` (4× L40S, 192 GB) in `us-east-1`.** Quota
   verified 2026-08-30 in the Engram Dynamics account: **On-Demand G&VT = 64 vCPU, Spot = 48 vCPU,
   nothing running** → one box (48 vCPU) launches now. AWS has no small H100 shape (H100 = 8×
@@ -357,6 +363,20 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-09-02 — UAT is an in-account STAGE, not the sub-account; shared-store GC made
+  environment-safe (shipped).** Decision: run UAT as a parallel `uat-` stack inside the prod
+  account/VPC (own ECS services, own DB, own secrets/buckets, `uat-app.`/`uat-api.` domains),
+  sharing the single GPU serving unit — trading hard account-level blast-radius for zero
+  cross-account networking (the GPU URLs are private-VPC IPs) and ~$30–80/mo. The org's "Test
+  Account" (651343918364) is the graduation path when the team grows. Consequences: (a) E8's
+  platform Terraform becomes ONE module instantiated twice (`env=prod|uat`); (b) UAT cannot
+  rehearse serving-side changes (different model/config) — those use ephemeral spot serving
+  units (`use_spot=true`, hours not months); (c) heavy UAT onboards contend with prod latency
+  (calendar rule at beta scale); (d) UAT sits inside the prod ML-plane trust boundary (shared
+  ML_AUTH_TOKEN). **Prerequisite shipped:** the GC sweep is now attribution-safe under a shared
+  cart store — only ids whose tenant prefix exists in the local DB are sweepable; foreign-
+  environment carts and legacy un-namespaced ids are skipped and counted (`n_foreign_skipped`),
+  so one environment's GC can never delete the other's carts. Suite 185 passed / 4 skipped.
 - **2026-09-02 — Retrieval upgrade: LLM doc descriptions (flag, default ON) + hybrid
   retriever.** Retrieval is the measured accuracy ceiling, so two investments: (1) at
   onboarding, the inference service generates a one-sentence description per doc **against the

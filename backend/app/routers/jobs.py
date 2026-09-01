@@ -11,7 +11,7 @@ from .. import config, jobqueue, ml_client
 from ..audit import record_event
 from ..db import SessionLocal
 from ..deps import get_current_user, get_db
-from ..models import Corpus, Document, Job, User
+from ..models import Corpus, Document, Job, Tenant, User
 from ..ratelimit import limiter
 from ..retrieval import cart_id_for
 from ..schemas import GcCartsReq, JobResp, ProgressReq
@@ -367,13 +367,27 @@ def gc_carts(
     referenced = {cart_id_for(tenant_id, fn) for (tenant_id, fn) in
                   db.query(Corpus.tenant_id, Document.filename)
                   .join(Document, Document.corpus_id == Corpus.id).all()}
+    # SHARED-STORE SAFETY: prod and the UAT stage share one cart store, so this sweep may
+    # see carts onboarded by the OTHER environment's control plane. Only ids whose tenant
+    # prefix belongs to a tenant THIS DB knows are orphan candidates — a foreign-prefixed
+    # cart is invisible here, never an "orphan". Ids without a parseable `<tenant>__`
+    # prefix (legacy/un-namespaced) are likewise skipped: never delete what we can't
+    # attribute to a local tenant.
+    local_tenants = {tid for (tid,) in db.query(Tenant.id).all()}
+
+    def _locally_owned(cid: str) -> bool:
+        prefix, sep, _rest = cid.partition("__")
+        return bool(sep) and prefix in local_tenants
+
     store_ids = set(ml_client.list_carts().get("cart_ids", []))
-    orphans = sorted(store_ids - referenced)
+    foreign = {cid for cid in store_ids if not _locally_owned(cid)}
+    orphans = sorted(store_ids - foreign - referenced)
 
     if not body.confirm:
         # Dry run (the default): show what WOULD be deleted, delete nothing. Cap the returned list so a
         # huge store can't return an unbounded body; n_orphans carries the true total.
-        return {"orphans": orphans[:500], "n_orphans": len(orphans), "deleted": False}
+        return {"orphans": orphans[:500], "n_orphans": len(orphans),
+                "n_foreign_skipped": len(foreign), "deleted": False}
 
     # Confirmed: delete the durable blobs and purge any serving caches for them. Both best-effort in the
     # same spirit as delete_corpus — but here we surface counts so the operator sees the outcome.
@@ -395,11 +409,12 @@ def gc_carts(
     record_event(
         db, tenant_id="_system", event="carts.gc",
         n_orphans=len(orphans),
+        n_foreign_skipped=len(foreign),
         cart_ids_deleted=cart_result.get("deleted", []),
         cart_ids_missing=cart_result.get("missing", []),
         ml_errors=ml_errors,
     )
-    return {"n_orphans": len(orphans), "deleted": True,
+    return {"n_orphans": len(orphans), "n_foreign_skipped": len(foreign), "deleted": True,
             "cart_ids_deleted": cart_result.get("deleted", []),
             "cart_ids_missing": cart_result.get("missing", []),
             "ml_errors": ml_errors}
