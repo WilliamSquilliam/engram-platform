@@ -18,6 +18,10 @@ from collections.abc import Iterable, Iterator
 from .base import Connector, Document, SourceRef
 from .google_drive import ConnectorNotConfigured
 
+# Flip to True when the Graph app + discover/fetch/delta are actually built (see the matching
+# flag in google_drive.py — the registry ANDs this with the creds check).
+IMPLEMENTED = False
+
 
 class SharePointConnector(Connector):
     source_type = "sharepoint"

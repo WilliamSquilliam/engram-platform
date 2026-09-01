@@ -76,8 +76,18 @@ export default function PlatformAdminPage() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [usage, setUsage] = useState<PlatformUsage | null>(null);
   const [requests, setRequests] = useState<AccessRequest[]>([]);
+  // One-time invite links from this session's approvals. Held HERE (not in the row) because
+  // approving refreshes the pending list, which unmounts the row — row-local state would
+  // destroy the only copy of the link before the operator could send it.
+  const [approvedLinks, setApprovedLinks] = useState<
+    { id: string; email: string; tenant: string; link: string | null }[]
+  >([]);
   const [gateChecked, setGateChecked] = useState(false);
   const [error, setError] = useState("");
+
+  const onApproved = useCallback((r: AccessRequest, link: string | null) => {
+    setApprovedLinks((a) => [...a, { id: r.id, email: r.email, tenant: r.tenant_name, link }]);
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -149,13 +159,37 @@ export default function PlatformAdminPage() {
             Approve to issue an invite link, or deny. Approving returns a one-time link to send.
           </p>
         </CardHeader>
-        <CardBody>
+        <CardBody className="space-y-4">
+          {approvedLinks.length > 0 && (
+            <div className="space-y-2" data-testid="approved-links">
+              {approvedLinks.map((a) => (
+                <div key={a.id} className="rounded-md border border-emerald-900/60 bg-slate-950 p-3">
+                  <p className="mb-2 text-xs text-slate-400">
+                    <Badge color="green">Approved</Badge>{" "}
+                    <span className="text-slate-200">{a.tenant}</span> · {a.email}
+                    {a.link ? " — send them this one-time link:" : " — invite emailed."}
+                  </p>
+                  {a.link && (
+                    <div className="flex items-center gap-2">
+                      <code
+                        data-testid="approved-invite-link"
+                        className="min-w-0 flex-1 truncate rounded bg-slate-800 px-2 py-1.5 text-xs text-slate-100"
+                      >
+                        {a.link}
+                      </code>
+                      <CopyButton value={a.link} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           {requests.length === 0 ? (
             <p className="text-sm text-slate-500">No pending requests.</p>
           ) : (
             <ul className="divide-y divide-slate-800" data-testid="access-requests">
               {requests.map((r) => (
-                <AccessRequestRow key={r.id} request={r} onChanged={load} />
+                <AccessRequestRow key={r.id} request={r} onChanged={load} onApproved={onApproved} />
               ))}
             </ul>
           )}
@@ -307,13 +341,16 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-// One pending waitlist entry with Approve / Deny. Approve reveals the returned invite link to copy.
+// One pending waitlist entry with Approve / Deny. The one-time invite link is reported UP via
+// onApproved — the refresh after approval unmounts this row, so the parent must own the link.
 function AccessRequestRow({
   request,
   onChanged,
+  onApproved,
 }: {
   request: AccessRequest;
   onChanged: () => Promise<void>;
+  onApproved: (r: AccessRequest, link: string | null) => void;
 }) {
   const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
   const [link, setLink] = useState<string | null>(null);
@@ -327,7 +364,7 @@ function AccessRequestRow({
       const res = await api.approveAccessRequest(request.id);
       setDone("approved");
       setLink(res.invite_link ?? null);
-      // Refresh the pending list in the background; keep this row so the link stays visible to copy.
+      onApproved(request, res.invite_link ?? null);
       onChanged().catch(() => {});
     } catch (e: any) {
       setErr(e.message || "Approve failed.");

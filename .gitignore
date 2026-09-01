@@ -26,3 +26,4 @@ frontend/next-env.d.ts
 
 # Claude Code runtime (agent worktrees, local state) — never commit
 .claude/
+.playwright-mcp/

@@ -17,6 +17,11 @@ from collections.abc import Iterable, Iterator
 
 from .base import Connector, Document, SourceRef
 
+# Flip to True when the OAuth dance + discover/fetch/delta are actually built. The registry
+# ANDs this with the creds check — creds alone must never light the connector up (caught in
+# the e2e run-up: a configured Google OAuth client made the UI offer a NotImplementedError).
+IMPLEMENTED = False
+
 
 class ConnectorNotConfigured(RuntimeError):
     """Raised when a connector is constructed without its OAuth credentials configured."""

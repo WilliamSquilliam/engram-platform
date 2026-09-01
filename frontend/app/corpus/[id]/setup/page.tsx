@@ -390,23 +390,29 @@ export default function OnboardingWizard() {
         <Card>
           <CardHeader>
             <h2 className="font-medium">Choose a model</h2>
-            <p className="text-xs text-slate-400">Tiers marked “coming soon” are not selectable yet.</p>
+            <p className="text-xs text-slate-400">
+              Tiers marked “coming soon” aren’t live yet — you can still pick one, finish setup,
+              and onboarding will start automatically once it’s enabled.
+            </p>
           </CardHeader>
           <CardBody className="space-y-4">
             <div className="space-y-2" data-testid="tier-list">
               {tiers.map((t) => {
                 const selected = selectedTier === t.id;
                 return (
+                  // Placeholder ("coming soon") tiers stay SELECTABLE: a tier choice is just a
+                  // wizard selection — the serving gate lives at POST /onboard (409
+                  // no_serving_engine -> the queued state). Disabling them dead-ended the whole
+                  // wizard while no model was wired (caught in the e2e run-up).
                   <button
                     key={t.id}
                     type="button"
-                    disabled={!t.available}
-                    onClick={() => t.available && chooseTier(t.id)}
+                    onClick={() => chooseTier(t.id)}
                     data-testid={`tier-${t.id}`}
                     className={cn(
-                      "flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition",
+                      "flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition hover:border-slate-700",
                       selected ? "border-emerald-400 bg-emerald-500/5" : "border-slate-800 bg-slate-900",
-                      t.available ? "hover:border-slate-700" : "cursor-not-allowed opacity-60"
+                      !t.available && "opacity-75"
                     )}
                   >
                     <div className="min-w-0">

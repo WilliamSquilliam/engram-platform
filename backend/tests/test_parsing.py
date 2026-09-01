@@ -266,15 +266,23 @@ def test_connectors_shape_and_default_gating(client, auth):
     assert by_id["sharepoint"]["available"] is False
 
 
-def test_connector_flips_available_when_creds_configured(client, auth, monkeypatch):
-    """Setting OAuth creds (here via the config flag the registry reads fresh each call) flips
-    a connector to available — the config-driven seam, no code change."""
-    monkeypatch.setattr(config, "GDRIVE_ENABLED", True)
+def test_connector_needs_implementation_and_creds(client, auth, monkeypatch):
+    """Availability = IMPLEMENTED and creds. Creds alone must NOT light a connector up while its
+    runtime is a NotImplementedError scaffold (e2e finding: a configured Google OAuth client made
+    the UI offer an unimplemented connector). Both flags together flip it available."""
+    from app.connectors import google_drive
+
     headers, _ = auth
+    monkeypatch.setattr(config, "GDRIVE_ENABLED", True)
     body = client.get("/connectors", headers=headers).json()
     by_id = {c["id"]: c for c in body["connectors"]}
-    assert by_id["google_drive"]["available"] is True
-    assert by_id["sharepoint"]["available"] is False  # still off
+    assert by_id["google_drive"]["available"] is False  # creds alone: still coming soon
+
+    monkeypatch.setattr(google_drive, "IMPLEMENTED", True)
+    body = client.get("/connectors", headers=headers).json()
+    by_id = {c["id"]: c for c in body["connectors"]}
+    assert by_id["google_drive"]["available"] is True   # implementation + creds
+    assert by_id["sharepoint"]["available"] is False    # still off
 
 
 # --- tiny PDF generators (no reportlab; a couple of literal PDFs) ----------------------

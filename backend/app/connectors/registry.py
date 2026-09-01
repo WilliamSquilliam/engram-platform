@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .. import config
+from . import google_drive, sharepoint
 
 
 @dataclass(frozen=True)
@@ -43,17 +44,20 @@ def _connectors() -> list[ConnectorInfo]:
             description="Upload files or drop a folder (.txt .md .pdf .docx .html).",
             available=True,  # the always-on path; no external credentials needed
         ),
+        # Availability = implementation exists AND creds configured. Creds alone must never
+        # flip a connector on: the runtime is a NotImplementedError scaffold until the module's
+        # IMPLEMENTED flag is raised with the real OAuth flow.
         ConnectorInfo(
             id="google_drive",
             label="Google Drive",
             description="Connect a Drive folder and sync its documents automatically.",
-            available=config.GDRIVE_ENABLED,
+            available=google_drive.IMPLEMENTED and config.GDRIVE_ENABLED,
         ),
         ConnectorInfo(
             id="sharepoint",
             label="SharePoint",
             description="Connect a SharePoint site or library and sync its documents.",
-            available=config.SHAREPOINT_ENABLED,
+            available=sharepoint.IMPLEMENTED and config.SHAREPOINT_ENABLED,
         ),
     ]
 
