@@ -225,7 +225,7 @@ reference platform.
 - **Deferred to a later phase:** plan tiers, quota enforcement, and Stripe billing +
   open self-serve, turned on once pricing is validated during the beta.
 
-### E8 — Infra, deploy, domains
+### E8 — Infra, deploy, domains  → **✅ built (2026-09-02); awaiting operator applies**
 - **Exists (reuse):** AWS account `808379776072`, `us-east-1`, profile `Engram-Dynamics`.
   Terraform for ECS (backend/frontend/worker) + GPU EC2 (`g6e`, L40S) + RDS Postgres 16 +
   ElastiCache Redis + S3 + Secrets Manager + Budgets, currently mothballed to save spend.
@@ -363,6 +363,15 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-09-02 — E8 built: two-env platform Terraform (`infra/platform-aws/`).** Four stacks
+  (common → uat → prod + the shared module), all validate clean, nothing applied: one public ALB +
+  ACM cert (Cloudflare records output for manual add), per-env Fargate services / RDS / S3 /
+  Secrets, serving-unit values via remote state, `build_push.sh` + `deploy.sh <env>` giving the
+  image → UAT → prod flow. Backend image gains libreoffice-writer (.doc) + a pinned fastembed
+  cache dir. ~$75–95/mo both envs. **Operator sequence to go live:** apply `common` → add ACM
+  CNAMEs at Cloudflare → `build_push.sh` → apply `envs/uat` + `deploy.sh uat` → add the 4 host
+  CNAMEs → verify at uat-app → `deploy.sh prod`. Prereqs also on the operator: SES production
+  access; the GPU serving unit applied (envs read its state).
 - **2026-09-02 — UAT is an in-account STAGE, not the sub-account; shared-store GC made
   environment-safe (shipped).** Decision: run UAT as a parallel `uat-` stack inside the prod
   account/VPC (own ECS services, own DB, own secrets/buckets, `uat-app.`/`uat-api.` domains),
