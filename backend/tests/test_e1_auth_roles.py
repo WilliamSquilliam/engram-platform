@@ -443,7 +443,7 @@ def test_email_backend_real_hides_link(client, monkeypatch):
 
     sent = {}
     monkeypatch.setattr(auth_router, "send_email",
-                        lambda to, subject, body: sent.update(to=to, body=body) or True)
+                        lambda to, subject, body, html=None: sent.update(to=to, body=body) or True)
 
     email = _email()
     client.post("/auth/register",

@@ -15,6 +15,7 @@ from .. import pricing, usage
 from ..config import FRONTEND_URL, INVITE_EXPIRE_HOURS
 from ..deps import get_db, require_tenant_admin
 from ..email import send_email
+from ..email_templates import invite_email
 from ..models import Invite, Tenant, User
 from ..schemas import (
     BillingResp,
@@ -111,7 +112,9 @@ def create_invite(
     db.commit()
 
     link = _invite_link(token)
-    sent = send_email(req.email, "You're invited", f"Accept your invitation: {link}")
+    workspace = db.get(Tenant, admin.tenant_id)
+    subject, text, html_body = invite_email(workspace.name if workspace else "your team", link)
+    sent = send_email(req.email, subject, text, html_body)
     return LinkResp(status="sent", invite_link=None if sent else link)
 
 

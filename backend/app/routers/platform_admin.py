@@ -17,6 +17,7 @@ from .. import pricing, usage
 from ..config import FRONTEND_URL, INVITE_EXPIRE_HOURS
 from ..deps import get_db, require_platform_admin
 from ..email import send_email
+from ..email_templates import access_approved_email
 from ..models import AccessRequest, Corpus, Invite, Tenant, User
 from ..schemas import (
     AccessRequestResp,
@@ -93,7 +94,8 @@ def approve_access_request(
     db.commit()
 
     link = _invite_link(token)
-    sent = send_email(req.email, "Your access is approved", f"Set up your account: {link}")
+    subject, text, html_body = access_approved_email(tenant.name, link)
+    sent = send_email(req.email, subject, text, html_body)
     logger.info("Approved access request %s for %s", request_id, req.email)
     return LinkResp(status="approved", invite_link=None if sent else link)
 

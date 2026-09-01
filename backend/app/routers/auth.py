@@ -20,6 +20,7 @@ from ..config import (
 )
 from ..deps import get_current_user, get_db
 from ..email import email_enabled, send_email
+from ..email_templates import password_reset_email
 from ..models import AccessRequest, Invite, PasswordReset, Tenant, User
 from ..oauth import oauth
 from ..ratelimit import limiter
@@ -165,7 +166,8 @@ def forgot_password(request: Request, req: ForgotPasswordReq, db: Session = Depe
         ))
         db.commit()
         link = _reset_link(token)
-        sent = send_email(user.email, "Reset your password", f"Reset your password: {link}")
+        subject, text, html_body = password_reset_email(link)
+        sent = send_email(user.email, subject, text, html_body)
         # SECURITY: this is a PUBLIC route — the link may only ride the response when no
         # real provider is configured (dev). A configured-but-FAILED send (SES sandbox,
         # provider outage) must return nothing, or anyone could mint themselves another

@@ -32,22 +32,25 @@ def email_enabled() -> bool:
     return config.EMAIL_BACKEND in ("ses", "smtp")
 
 
-def _send_ses(to: str, subject: str, body: str) -> bool:
+def _send_ses(to: str, subject: str, body: str, html: str | None = None) -> bool:
     import boto3  # imported lazily so `none`/`smtp` don't need AWS creds
 
+    ses_body: dict = {"Text": {"Data": body}}
+    if html:
+        ses_body["Html"] = {"Data": html}
     client = boto3.client("ses", region_name=config.AWS_REGION)
     client.send_email(
         Source=config.EMAIL_FROM,
         Destination={"ToAddresses": [to]},
         Message={
             "Subject": {"Data": subject},
-            "Body": {"Text": {"Data": body}},
+            "Body": ses_body,
         },
     )
     return True
 
 
-def _send_smtp(to: str, subject: str, body: str) -> bool:
+def _send_smtp(to: str, subject: str, body: str, html: str | None = None) -> bool:
     import smtplib
     from email.message import EmailMessage
 
@@ -56,6 +59,8 @@ def _send_smtp(to: str, subject: str, body: str) -> bool:
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
+    if html:
+        msg.add_alternative(html, subtype="html")
 
     with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=10) as smtp:
         if config.SMTP_STARTTLS:
@@ -66,8 +71,9 @@ def _send_smtp(to: str, subject: str, body: str) -> bool:
     return True
 
 
-def send_email(to: str, subject: str, body: str) -> bool:
-    """Send `body` to `to`. Returns True if a real provider accepted it, False when
+def send_email(to: str, subject: str, body: str, html: str | None = None) -> bool:
+    """Send to `to`: `body` is the plain-text part, `html` the optional styled part
+    (see email_templates.py). Returns True if a real provider accepted it, False when
     EMAIL_BACKEND=none (caller then returns the link in the response). Never raises."""
     backend = config.EMAIL_BACKEND
     if backend == "none":
@@ -77,9 +83,9 @@ def send_email(to: str, subject: str, body: str) -> bool:
         return False
     try:
         if backend == "ses":
-            return _send_ses(to, subject, body)
+            return _send_ses(to, subject, body, html)
         if backend == "smtp":
-            return _send_smtp(to, subject, body)
+            return _send_smtp(to, subject, body, html)
         logger.error("Unknown EMAIL_BACKEND=%r; not sending", backend)
         return False
     except Exception:  # noqa: BLE001 — email is best-effort, must not 500 the request
