@@ -357,6 +357,18 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-09-02 — Retrieval upgrade: LLM doc descriptions (flag, default ON) + hybrid
+  retriever.** Retrieval is the measured accuracy ceiling, so two investments: (1) at
+  onboarding, the inference service generates a one-sentence description per doc **against the
+  resident cart** (short prefill + ≤60-token decode, batched — est. +15–20% onboarding cost) via
+  a new `POST /describe`; stored on `Document.description` (Alembic `0011`), shown in the UI,
+  folded into the wizard estimate, and **gated by `DOC_DESCRIPTIONS_ENABLED` (default on) so an
+  off-run gives a clean A/B baseline**; best-effort — can never fail an onboarding. (2) the
+  control-plane retriever is now the industry-standard hybrid: `bm25s` + `fastembed` dense
+  (ONNX, torch-free) fused with RRF; descriptions indexed as retrieval metadata only; dense
+  degrades to lexical on failure; `fused` (GPU) unchanged. **GPU-gated follow-ups:** wire
+  `/describe` into the serving smoke test, and run the actual recall@k A/B (descriptions on vs
+  off) once the box is live — the flag exists so that measurement is one env var.
 - **2026-09-01 — Serving decision: Llama-3.3-70B (FP8) on one g6e.12xlarge, packaged as a
   swappable serving unit.** Command A+ has no runnable path on available hardware for now, so the
   beta serves the validated fallback: `RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic`, TP=4 on the
