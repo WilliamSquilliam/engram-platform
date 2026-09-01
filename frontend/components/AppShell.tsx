@@ -86,8 +86,9 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
             </svg>
           </button>
           <Link href="/" className="flex items-center gap-2 font-semibold">
-            <img src="/logo.svg" alt="Engram Smart CAG" width={28} height={28} className="h-7 w-7" />
-            <span>Engram</span>
+            {/* Stacked wordmark (ribbons over "Engram Dynamics"): the mark carries the name,
+                so no separate text label next to it. */}
+            <img src="/logo-wordmark.svg" alt="Engram Dynamics" className="h-10 w-auto" />
           </Link>
         </div>
         <div className="flex items-center gap-3 text-sm">
