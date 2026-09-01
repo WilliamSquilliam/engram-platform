@@ -41,7 +41,8 @@ export default function AboutPage() {
       {/* bare top bar */}
       <header className="mx-auto flex max-w-5xl items-center justify-between px-6 py-5">
         <Link href="/" className="flex items-center gap-2 font-semibold">
-          <img src="/logo-wordmark.svg" alt="Engram Dynamics" className="h-10 w-auto" />
+          <img src="/icon.svg" alt="" aria-hidden className="h-8 w-8" />
+          <span>Engram Dynamics</span>
         </Link>
         <nav className="flex items-center gap-5 text-sm text-slate-400">
           <Link href="/demo" className="hover:text-slate-100">Cost demo</Link>

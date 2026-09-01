@@ -86,9 +86,10 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
             </svg>
           </button>
           <Link href="/" className="flex items-center gap-2 font-semibold">
-            {/* Stacked wordmark (ribbons over "Engram Dynamics"): the mark carries the name,
-                so no separate text label next to it. */}
-            <img src="/logo-wordmark.svg" alt="Engram Dynamics" className="h-10 w-auto" />
+            {/* Horizontal lockup: ribbons mark + the name as real text (the stacked wordmark's
+                baked-in caption is illegible at header height; text stays crisp and on-font). */}
+            <img src="/icon.svg" alt="" aria-hidden className="h-8 w-8" />
+            <span className="text-slate-100">Engram Dynamics</span>
           </Link>
         </div>
         <div className="flex items-center gap-3 text-sm">
