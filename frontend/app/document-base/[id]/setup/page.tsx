@@ -257,7 +257,7 @@ export default function OnboardingWizard() {
         <Card>
           <CardHeader>
             <h2 className="font-medium">Name your document base</h2>
-            <p className="text-xs text-slate-400">One knowledge base — e.g. a handbook or support KB.</p>
+            <p className="text-xs text-slate-400">A document base is also called a knowledge base, it is everything you want the AI to know.</p>
           </CardHeader>
           <CardBody className="space-y-4">
             <Input data-testid="wizard-name" value={name} onChange={(e: any) => setName(e.target.value)} />

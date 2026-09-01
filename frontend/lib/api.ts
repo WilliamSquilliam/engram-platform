@@ -136,12 +136,19 @@ export const api = {
       headers: JSON_HEADERS,
       body: JSON.stringify(payload),
     }),
-  // Redeem an invite token by setting a password; returns a session token so we land in the app.
-  acceptInvite: (token: string, password: string, name?: string) =>
+  // Who is this invite for? The accept page shows "joining {workspace} as {email}".
+  inviteInfo: (token: string) =>
+    req<{ email: string; workspace: string }>("/auth/invite-info", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token }),
+    }),
+  // Redeem an invite token: name + password are both required; returns a session token.
+  acceptInvite: (token: string, password: string, name: string) =>
     req<TokenResponse>("/auth/accept-invite", {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ token, password, ...(name ? { name } : {}) }),
+      body: JSON.stringify({ token, password, name }),
     }),
   // Always returns a generic success message (never reveals whether the email exists).
   forgotPassword: (email: string) =>

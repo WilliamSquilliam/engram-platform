@@ -56,7 +56,7 @@ def list_members(
     )
     return MembersResp(
         members=[
-            MemberResp(id=u.id, email=u.email, role=u.role, is_active=u.is_active)
+            MemberResp(id=u.id, email=u.email, name=u.name, role=u.role, is_active=u.is_active)
             for u in members
         ],
         invites=[
@@ -158,7 +158,8 @@ def update_member_role(
             )
     target.role = req.role
     db.commit()
-    return MemberResp(id=target.id, email=target.email, role=target.role, is_active=target.is_active)
+    return MemberResp(id=target.id, email=target.email, name=target.name, role=target.role,
+                      is_active=target.is_active)
 
 
 @router.delete("/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

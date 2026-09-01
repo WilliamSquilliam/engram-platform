@@ -100,6 +100,40 @@ def test_google_callback_accepts_pending_invite(client, auth, monkeypatch):
         db.close()
 
 
+def test_accept_invite_requires_name(client, auth):
+    """Name is REQUIRED at accept-invite (422 without it) and gets stored + surfaced
+    via /auth/me and the members list."""
+    headers, _ = auth
+    link = client.post("/admin/invites", json={"email": "named@example.test", "role": "member"},
+                       headers=headers).json()["invite_link"]
+    token = link.split("token=")[1]
+    # Missing name -> validation error, nothing consumed.
+    assert client.post("/auth/accept-invite",
+                       json={"token": token, "password": "pw123456"}).status_code == 422
+    # With a name -> accepted, and the name is stored + returned.
+    r = client.post("/auth/accept-invite",
+                    json={"token": token, "password": "pw123456", "name": "Named Person"})
+    assert r.status_code == 200
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"})
+    assert me.json()["name"] == "Named Person"
+    members = client.get("/admin/members", headers=headers).json()["members"]
+    assert any(m["email"] == "named@example.test" and m["name"] == "Named Person" for m in members)
+
+
+def test_invite_info_reveals_email_and_workspace(client, auth):
+    """The accept page's confirmation header: a valid token resolves to the invited
+    email + workspace; garbage tokens 400."""
+    headers, _ = auth
+    link = client.post("/admin/invites", json={"email": "who@example.test", "role": "member"},
+                       headers=headers).json()["invite_link"]
+    token = link.split("token=")[1]
+    r = client.post("/auth/invite-info", json={"token": token})
+    assert r.status_code == 200
+    assert r.json()["email"] == "who@example.test"
+    assert r.json()["workspace"]  # the tenant name
+    assert client.post("/auth/invite-info", json={"token": "garbage"}).status_code == 400
+
+
 def test_no_duplicate_pending_invites(client, auth):
     """One live pending invite per (tenant, email): a second invite 409s until the
     first is revoked (or expires), then reissuing works again."""

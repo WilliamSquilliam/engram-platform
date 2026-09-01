@@ -51,10 +51,21 @@ class RequestAccessReq(BaseModel):
 
 
 class AcceptInviteReq(BaseModel):
-    """Redeem an invite/approval link: set a password and activate the account."""
+    """Redeem an invite/approval link: set a password and activate the account.
+    `name` is required — it's the member's display name across the workspace."""
     token: str = Field(min_length=1, max_length=512)
     password: str = Field(min_length=8, max_length=128)
-    name: str | None = Field(default=None, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+
+
+class InviteInfoReq(BaseModel):
+    """Look up who an invite is for (the accept page's confirmation header)."""
+    token: str = Field(min_length=1, max_length=512)
+
+
+class InviteInfoResp(BaseModel):
+    email: str
+    workspace: str
 
 
 class ForgotPasswordReq(BaseModel):
@@ -89,6 +100,7 @@ class RoleUpdateReq(BaseModel):
 class MemberResp(BaseModel):
     id: str
     email: str
+    name: str | None = None
     role: str
     is_active: bool = True
 
@@ -129,6 +141,7 @@ class LinkResp(BaseModel):
 class UserResp(BaseModel):
     id: str
     email: str
+    name: str | None = None
     tenant_id: str
     role: str
     # Cross-tenant superuser flag — the frontend gates the platform-admin nav on this.

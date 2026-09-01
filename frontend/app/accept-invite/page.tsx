@@ -10,10 +10,24 @@ import { Button, Input, Label, Card, CardBody, CardHeader } from "@/components/u
 function AcceptInviteInner() {
   const router = useRouter();
   // The token rides the URL fragment (client-only), so resolve it in an effect:
-  // null = still resolving, "" = genuinely missing.
+  // null = still resolving, "" = missing/invalid.
   const [token, setInviteToken] = useState<string | null>(null);
+  // Who the invite is for — shown so the invitee confirms before setting a password.
+  // (The token itself is the proof of invitation; this is confirmation, not a check.)
+  const [info, setInfo] = useState<{ email: string; workspace: string } | null>(null);
   useEffect(() => {
-    setInviteToken(readUrlToken() ?? "");
+    const t = readUrlToken() ?? "";
+    if (!t) {
+      setInviteToken("");
+      return;
+    }
+    api
+      .inviteInfo(t)
+      .then((i) => {
+        setInfo(i);
+        setInviteToken(t);
+      })
+      .catch(() => setInviteToken("")); // invalid/expired -> same message as missing
   }, []);
 
   const [name, setName] = useState("");
@@ -26,6 +40,10 @@ function AcceptInviteInner() {
     e.preventDefault();
     if (!token) return;
     setError("");
+    if (!name.trim()) {
+      setError("Please enter your name.");
+      return;
+    }
     if (password.length < 8) {
       setError("Use at least 8 characters.");
       return;
@@ -36,7 +54,7 @@ function AcceptInviteInner() {
     }
     setBusy(true);
     try {
-      const res = await api.acceptInvite(token, password, name || undefined);
+      const res = await api.acceptInvite(token, password, name.trim());
       // Fresh signup: keep them signed in on this device (persistent store; token
       // lifetime is the backend default — they can pick session-only next login).
       setToken(res.access_token, true);
@@ -53,14 +71,19 @@ function AcceptInviteInner() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <h1 className="text-xl font-semibold">Set your password</h1>
-          <p className="text-sm text-slate-500">Finish joining your team on Engram.</p>
+          <p className="text-sm text-slate-500" data-testid="invite-info">
+            {info
+              ? <>Joining <span className="text-slate-300">{info.workspace}</span> as{" "}
+                  <span className="text-slate-300">{info.email}</span></>
+              : "Finish joining your team on Engram."}
+          </p>
         </CardHeader>
         <CardBody>
           {token === null ? null : !token ? (
             <div className="space-y-3 text-sm text-slate-400">
               <p data-testid="invite-error">
-                This invite link is missing its token. Please use the link from your email, or ask your
-                admin to send a new invite.
+                This invite link is missing, invalid, or expired. Please use the link from your
+                email, or ask your admin to send a new invite.
               </p>
               <Link href="/login" className="text-slate-300 hover:text-slate-100">
                 Back to sign in
@@ -69,12 +92,13 @@ function AcceptInviteInner() {
           ) : (
             <form onSubmit={submit} className="space-y-3">
               <div>
-                <Label>Your name (optional)</Label>
+                <Label>Your name</Label>
                 <Input
                   data-testid="invite-name"
                   value={name}
                   onChange={(e: any) => setName(e.target.value)}
                   placeholder="Jane Doe"
+                  required
                 />
               </div>
               <div>

@@ -70,7 +70,7 @@ def test_request_access_approve_accept_login(client):
     token = body["invite_link"].split("token=")[1]
 
     # Accept-invite creates + signs in the user; they land as their tenant's admin.
-    r = client.post("/auth/accept-invite", json={"token": token, "password": "newpass123"})
+    r = client.post("/auth/accept-invite", json={"token": token, "password": "newpass123", "name": "Founder One"})
     assert r.status_code == 200
     access = r.json()["access_token"]
     me = client.get("/auth/me", headers={"Authorization": f"Bearer {access}"})
@@ -106,7 +106,7 @@ def test_teammate_invite_and_accept(client):
     assert mate in [i["email"] for i in r.json()["invites"]]
 
     # Redeem it.
-    r = client.post("/auth/accept-invite", json={"token": token, "password": "matepass1"})
+    r = client.post("/auth/accept-invite", json={"token": token, "password": "matepass1", "name": "Mate One"})
     assert r.status_code == 200
     mate_token = r.json()["access_token"]
 
@@ -133,13 +133,13 @@ def test_accept_invite_rejects_bad_and_reused_token(client):
 
     # Garbage token -> 400.
     assert client.post("/auth/accept-invite",
-                       json={"token": "not-a-real-token", "password": "x" * 8}).status_code == 400
+                       json={"token": "not-a-real-token", "password": "x" * 8, "name": "N"}).status_code == 400
 
     # First accept works; a second accept of the SAME token is rejected (single-use).
     assert client.post("/auth/accept-invite",
-                       json={"token": token, "password": "matepass1"}).status_code == 200
+                       json={"token": token, "password": "matepass1", "name": "N"}).status_code == 200
     assert client.post("/auth/accept-invite",
-                       json={"token": token, "password": "matepass2"}).status_code == 400
+                       json={"token": token, "password": "matepass2", "name": "N"}).status_code == 400
 
 
 # --- forgot -> reset ------------------------------------------------------
@@ -201,7 +201,7 @@ def test_member_is_forbidden_from_admin_routes(client):
     token = client.post("/admin/invites", json={"email": mate, "role": "member"},
                         headers=admin).json()["invite_link"].split("token=")[1]
     mate_token = client.post("/auth/accept-invite",
-                             json={"token": token, "password": "matepass1"}).json()["access_token"]
+                             json={"token": token, "password": "matepass1", "name": "Mate Two"}).json()["access_token"]
     mate_hdr = {"Authorization": f"Bearer {mate_token}"}
 
     assert client.get("/admin/members", headers=mate_hdr).status_code == 403
@@ -233,7 +233,7 @@ def test_admin_can_change_role_and_remove_member(client):
     mate = _email()
     token = client.post("/admin/invites", json={"email": mate, "role": "member"},
                         headers=admin).json()["invite_link"].split("token=")[1]
-    client.post("/auth/accept-invite", json={"token": token, "password": "matepass1"})
+    client.post("/auth/accept-invite", json={"token": token, "password": "matepass1", "name": "Mate Three"})
 
     members = client.get("/admin/members", headers=admin).json()["members"]
     mate_id = next(m["id"] for m in members if m["email"] == mate)
@@ -375,7 +375,7 @@ def test_cross_tenant_invite_rejected_and_leaves_account_intact(client):
     token = link.split("token=")[1]
 
     # Redeeming B's invite for A's account is rejected 409 — no takeover.
-    r = client.post("/auth/accept-invite", json={"token": token, "password": "hijacked1"})
+    r = client.post("/auth/accept-invite", json={"token": token, "password": "hijacked1", "name": "Hijacker"})
     assert r.status_code == 409
 
     # The victim's account is untouched: still in tenant A, old password still works, new one doesn't.
@@ -421,11 +421,11 @@ def test_same_tenant_reinvite_still_works(client):
     token = client.post("/admin/invites", json={"email": (mate := _email()), "role": "member"},
                         headers=admin).json()["invite_link"].split("token=")[1]
     assert client.post("/auth/accept-invite",
-                       json={"token": token, "password": "matepass1"}).status_code == 200
+                       json={"token": token, "password": "matepass1", "name": "N"}).status_code == 200
 
     # A fresh invite FROM THE SAME TENANT (minted directly) for the existing member, with a new role.
     token2 = _mint_invite(tid, mate, role="admin")
-    r = client.post("/auth/accept-invite", json={"token": token2, "password": "matepass2"})
+    r = client.post("/auth/accept-invite", json={"token": token2, "password": "matepass2", "name": "N"})
     assert r.status_code == 200
     me = client.get("/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).json()
     assert me["role"] == "admin"          # same-tenant re-invite updated the role

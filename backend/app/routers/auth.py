@@ -27,6 +27,8 @@ from ..ratelimit import limiter
 from ..schemas import (
     AcceptInviteReq,
     ForgotPasswordReq,
+    InviteInfoReq,
+    InviteInfoResp,
     LinkResp,
     RegisterReq,
     RequestAccessReq,
@@ -124,6 +126,7 @@ def accept_invite(request: Request, req: AcceptInviteReq, db: Session = Depends(
         user = User(
             tenant_id=invite.tenant_id,
             email=invite.email,
+            name=req.name.strip(),
             hashed_password=hash_password(req.password),
             role=invite.role,
             email_verified=True,
@@ -140,12 +143,33 @@ def accept_invite(request: Request, req: AcceptInviteReq, db: Session = Depends(
             raise HTTPException(status.HTTP_409_CONFLICT, "email already in use")
         # Existing account of THIS tenant (e.g. re-invited / previously deactivated): activate + set pw.
         user.hashed_password = hash_password(req.password)
+        user.name = req.name.strip()
         user.role = invite.role
         user.email_verified = True
         user.is_active = True
     invite.accepted_at = _now()
     db.commit()
     return TokenResp(access_token=create_access_token(user.id, user.tenant_id))
+
+
+@router.post("/invite-info", response_model=InviteInfoResp)
+@limiter.limit("20/minute")
+def invite_info(request: Request, req: InviteInfoReq, db: Session = Depends(get_db)):
+    """Who is this invite for? The accept page shows "joining {workspace} as {email}" so
+    the invitee can confirm before setting a password. Reveals nothing the token holder
+    couldn't learn by accepting (the token IS the proof of invitation); token rides the
+    POST body so it stays out of URLs/logs."""
+    token_hash = hash_token(req.token)
+    invite = db.query(Invite).filter(Invite.token_hash == token_hash).first()
+    if (
+        invite is None
+        or not verify_token(req.token, invite.token_hash)
+        or invite.accepted_at is not None
+        or invite.expires_at < _now()
+    ):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired invite")
+    tenant = db.get(Tenant, invite.tenant_id)
+    return InviteInfoResp(email=invite.email, workspace=tenant.name if tenant else "your team")
 
 
 @router.post("/forgot-password", response_model=LinkResp)
@@ -219,7 +243,7 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
 
 @router.get("/me", response_model=UserResp)
 def me(user: User = Depends(get_current_user)):
-    return UserResp(id=user.id, email=user.email, tenant_id=user.tenant_id,
+    return UserResp(id=user.id, email=user.email, name=user.name, tenant_id=user.tenant_id,
                     role=user.role, platform_admin=user.platform_admin)
 
 
@@ -270,7 +294,8 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
         )
         if invite is not None and invite.expires_at > _now():
             user = User(tenant_id=invite.tenant_id, email=email, role=invite.role,
-                        hashed_password=OAUTH_NO_PASSWORD, email_verified=True)
+                        name=info.get("name"), hashed_password=OAUTH_NO_PASSWORD,
+                        email_verified=True)
             invite.accepted_at = _now()
             db.add(user)
             db.commit()
@@ -281,7 +306,8 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
             db.add(tenant)
             db.flush()
             user = User(tenant_id=tenant.id, email=email, role="admin",
-                        hashed_password=OAUTH_NO_PASSWORD, email_verified=True)
+                        name=info.get("name"), hashed_password=OAUTH_NO_PASSWORD,
+                        email_verified=True)
             db.add(user)
             db.commit()
         else:

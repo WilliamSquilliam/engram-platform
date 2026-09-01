@@ -38,6 +38,9 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    # Display name. Required at the accept-invite API; nullable in the DB for accounts
+    # created before it existed (register / early Google sign-ins).
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
     hashed_password: Mapped[str] = mapped_column(String)
     # Workspace-level role (E1): the FIRST user of a tenant is "admin", teammates
     # invited in default to "member". require_tenant_admin gates /admin/*.

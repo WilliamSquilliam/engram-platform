@@ -49,7 +49,7 @@ export default function NewCorpusPage() {
         <CardHeader>
           <h2 className="font-medium">Name Your Document Base</h2>
           <p className="text-xs text-slate-400">
-            A document base is one knowledge base (e.g. a product handbook or a support KB).
+            A document base is also called a knowledge base, it is everything you want the AI to know.
           </p>
         </CardHeader>
         <CardBody>

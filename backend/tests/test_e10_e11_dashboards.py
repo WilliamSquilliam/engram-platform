@@ -199,7 +199,7 @@ def test_member_forbidden_from_admin_dashboards(client):
     token = client.post("/admin/invites", json={"email": mate, "role": "member"},
                         headers=owner_hdr).json()["invite_link"].split("token=")[1]
     mate_tok = client.post("/auth/accept-invite",
-                           json={"token": token, "password": "matepass1"}).json()["access_token"]
+                           json={"token": token, "password": "matepass1", "name": "Dash Mate"}).json()["access_token"]
     mate_hdr = {"Authorization": f"Bearer {mate_tok}"}
 
     assert client.get("/admin/usage", headers=mate_hdr).status_code == 403

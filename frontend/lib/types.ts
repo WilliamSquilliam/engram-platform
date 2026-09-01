@@ -107,6 +107,8 @@ export interface Job {
 export interface User {
   id: string;
   email: string;
+  // Display name (set at accept-invite / from Google; older accounts may lack one).
+  name?: string | null;
   tenant_id: string;
   // Tenant role: "admin" gates the Team section + all /admin endpoints. Everyone else is "member".
   role: "admin" | "member" | string;
@@ -122,10 +124,11 @@ export interface TokenResponse {
 // --- Team management (tenant-admin) -------------------------------------------------------------
 // A tenant member as returned by GET /admin/members.
 export type MemberRole = "admin" | "member";
-// Mirrors backend MemberResp exactly (id/email/role/is_active) — no name or status field is sent.
+// Mirrors backend MemberResp exactly (id/email/name/role/is_active).
 export interface Member {
   id: string;
   email: string;
+  name?: string | null;
   role: MemberRole;
   is_active?: boolean;
 }
