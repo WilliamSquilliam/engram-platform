@@ -144,8 +144,188 @@ def test_pdf_over_page_limit_rejected(monkeypatch):
 
 def test_supported_exts_matches_contract():
     assert SUPPORTED_EXTS == frozenset(
-        {".txt", ".md", ".pdf", ".docx", ".html", ".htm"}
+        {".txt", ".md", ".pdf", ".docx", ".doc", ".html", ".htm",
+         ".xlsx", ".xls", ".csv", ".tsv"}
     )
+
+
+# --- OCR fallback for scanned PDFs (pypdfium2 render + RapidOCR) -----------------------
+
+def _image_pdf(words: list[str]) -> bytes:
+    """An IMAGE-ONLY PDF (no text layer): one page per word, each drawn as large black text on a
+    white bitmap and saved as PDF via Pillow. pypdf extracts nothing from it, forcing the OCR path."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = ImageFont.load_default(size=48)
+    pages = []
+    for w in words:
+        img = Image.new("RGB", (900, 250), "white")
+        ImageDraw.Draw(img).text((40, 90), w, fill="black", font=font)
+        pages.append(img)
+    buf = io.BytesIO()
+    pages[0].save(buf, format="PDF", save_all=True, append_images=pages[1:])
+    return buf.getvalue()
+
+
+@pytest.mark.timeout(120)  # OCR (engine init + per-page inference) is slow; generous ceiling.
+def test_scanned_pdf_ocr_extracts_text():
+    """An image-only PDF (no text layer) is OCR'd at upload and yields the drawn word. RapidOCR is
+    fuzzy, so we assert a case-insensitive substring of an unambiguous ALL-CAPS word. If the OCR
+    engine can't initialize in this environment, skip (don't fail) — OCR is a best-effort fallback."""
+    pytest.importorskip("PIL")
+    from app import parsing
+
+    if parsing._get_ocr_engine() is None:
+        pytest.skip("RapidOCR engine could not initialize in this environment")
+
+    pdf = _image_pdf(["ENCRYPTION"])
+    text, ok, err = extract_text("scan.pdf", pdf)
+    assert ok, err
+    assert "encryption" in text.lower()
+
+
+@pytest.mark.timeout(120)
+def test_scanned_pdf_over_ocr_page_cap_fails(monkeypatch):
+    """A scanned PDF past OCR_MAX_PAGES is refused as a clean parse failure mentioning the limit.
+    We lower the cap to 1 and feed a 2-page image PDF instead of building a 40-page scan."""
+    pytest.importorskip("PIL")
+    from app import config, parsing
+
+    if parsing._get_ocr_engine() is None:
+        pytest.skip("RapidOCR engine could not initialize in this environment")
+
+    monkeypatch.setattr(config, "OCR_MAX_PAGES", 1)
+    pdf = _image_pdf(["ALPHA", "BETA"])  # 2 pages > the patched cap of 1
+    text, ok, err = extract_text("bigscan.pdf", pdf)
+    assert not ok and text == ""
+    assert "1" in err and "limit" in err.lower()
+
+
+# --- spreadsheets (xlsx / xls / csv / tsv) --------------------------------------------
+
+def test_xlsx_extracts_sheets_rows_and_skips_empty():
+    """XLSX -> '## Sheet: <name>' headers, ' | '-joined rows, fully-empty rows skipped."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws1 = wb.active
+    ws1.title = "People"
+    ws1.append(["Name", "Role"])
+    ws1.append(["Alice", "Eng"])
+    ws1.append([None, None])   # fully-empty row -> must be skipped
+    ws1.append(["Bob", "PM"])
+    ws2 = wb.create_sheet("Nums")
+    ws2.append([1, 2, 3])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    text, ok, err = extract_text("book.xlsx", buf.getvalue())
+    assert ok, err
+    assert "## Sheet: People" in text
+    assert "## Sheet: Nums" in text
+    assert "Name | Role" in text
+    assert "Alice | Eng" in text
+    assert "Bob | PM" in text
+    assert "1 | 2 | 3" in text
+    # The empty row left no ' |  | ' blank line between Alice and Bob.
+    assert "Alice | Eng\nBob | PM" in text
+
+
+def test_csv_and_tsv_extract_rows():
+    text, ok, err = extract_text("data.csv", b"a,b,c\n1,2,3\n")
+    assert ok, err
+    assert "## Sheet: CSV" in text
+    assert "a | b | c" in text and "1 | 2 | 3" in text
+
+    text, ok, err = extract_text("data.tsv", b"x\ty\n9\t8\n")
+    assert ok, err
+    assert "## Sheet: TSV" in text
+    assert "x | y" in text and "9 | 8" in text
+
+
+def test_xls_extracts_rows():
+    """Legacy .xls via xlrd. Fixture generated with xlwt (a TEST-ONLY dependency, not shipped in
+    requirements.txt) — a pure-python .xls writer, so the test needs no committed binary fixture."""
+    xlwt = pytest.importorskip("xlwt")
+
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("Data")
+    ws.write(0, 0, "Region")
+    ws.write(0, 1, "Sales")
+    ws.write(1, 0, "West")
+    ws.write(1, 1, 100)
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    text, ok, err = extract_text("legacy.xls", buf.getvalue())
+    assert ok, err
+    assert "## Sheet: Data" in text
+    assert "Region | Sales" in text
+    assert "West" in text and "100" in text
+
+
+def test_xlsx_truncates_huge_sheet():
+    """A sheet past the per-sheet row cap is TRUNCATED (not failed) with a '[truncated: N more rows]'
+    marker. We lower the cap so the test stays fast."""
+    import openpyxl
+    from app import parsing
+
+    monkey_cap = 10
+    orig = parsing._XLSX_MAX_ROWS_PER_SHEET
+    parsing._XLSX_MAX_ROWS_PER_SHEET = monkey_cap
+    try:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        for i in range(monkey_cap + 5):  # 5 rows over the cap
+            ws.append([f"row{i}", i])
+        buf = io.BytesIO()
+        wb.save(buf)
+        text, ok, err = extract_text("big.xlsx", buf.getvalue())
+        assert ok, err
+        assert "[truncated: 5 more rows]" in text
+    finally:
+        parsing._XLSX_MAX_ROWS_PER_SHEET = orig
+
+
+# --- legacy .doc sniffing (PK->docx, {\rtf->striprtf, OLE->soffice-or-fail) ------------
+
+def test_doc_mislabeled_docx_parses_as_docx():
+    """A real .docx (starts with 'PK') uploaded as .doc is sniffed and parsed as docx."""
+    pytest.importorskip("docx")
+    from docx import Document as DocxDocument
+
+    buf = io.BytesIO()
+    d = DocxDocument()
+    d.add_paragraph("Mislabeled but actually a docx.")
+    d.save(buf)
+
+    text, ok, err = extract_text("report.doc", buf.getvalue())
+    assert ok, err
+    assert "Mislabeled but actually a docx." in text
+
+
+def test_doc_mislabeled_rtf_extracts_text():
+    """An RTF file (starts with '{\\rtf') uploaded as .doc is extracted via striprtf."""
+    pytest.importorskip("striprtf")
+    rtf = rb"{\rtf1\ansi\deff0 Refund policy is 30 days.}"
+    text, ok, err = extract_text("policy.doc", rtf)
+    assert ok, err
+    assert "Refund policy is 30 days." in text
+
+
+def test_genuine_ole_doc_without_soffice_fails_clearly(monkeypatch):
+    """A genuine OLE binary .doc with no LibreOffice on PATH fails gracefully with the save-as-docx
+    message — we never hand-parse OLE."""
+    import shutil as _shutil
+
+    from app import parsing
+    monkeypatch.setattr(parsing.shutil, "which", lambda name: None)  # no soffice anywhere on PATH
+
+    ole = parsing._OLE_MAGIC + b"\x00" * 512  # OLE magic header, then junk
+    text, ok, err = extract_text("old.doc", ole)
+    assert not ok and text == ""
+    assert "docx" in err.lower()  # "...save it as .docx and re-upload."
+    _shutil  # keep the import referenced (mirrors the monkeypatch target module)
 
 
 # --- integration: parsing wired into upload + onboard ---------------------------------

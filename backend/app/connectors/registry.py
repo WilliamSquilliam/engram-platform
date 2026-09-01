@@ -41,7 +41,7 @@ def _connectors() -> list[ConnectorInfo]:
         ConnectorInfo(
             id="filesystem",
             label="File upload",
-            description="Upload files or drop a folder (.txt .md .pdf .docx .html).",
+            description="Upload files or drop a folder (.txt .md .pdf .docx .doc .html .xlsx .xls .csv).",
             available=True,  # the always-on path; no external credentials needed
         ),
         # Availability = implementation exists AND creds configured. Creds alone must never

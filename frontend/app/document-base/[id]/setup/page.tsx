@@ -25,16 +25,21 @@ import type {
   OnboardingStep,
 } from "@/lib/types";
 
-// Accepted upload types (shared contract with the backend's parsers).
-const ACCEPTED_EXTS = [".txt", ".md", ".pdf", ".docx", ".html", ".htm"];
-const DOC_RE = /\.(txt|md|pdf|docx|html?)$/i;
+// Accepted upload types (shared contract with the backend's parsers — see backend SUPPORTED_EXTS).
+const ACCEPTED_EXTS = [".txt", ".md", ".pdf", ".docx", ".doc", ".html", ".xlsx", ".xls", ".csv"];
+const DOC_RE = /\.(txt|md|pdf|docx?|html?|xlsx?|csv|tsv)$/i;
 // The dropzone `accept` map (MIME -> extensions) react-dropzone filters against.
 const DROPZONE_ACCEPT: Record<string, string[]> = {
   "text/plain": [".txt"],
   "text/markdown": [".md"],
   "application/pdf": [".pdf"],
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+  "application/msword": [".doc"],
   "text/html": [".html", ".htm"],
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+  "application/vnd.ms-excel": [".xls"],
+  "text/csv": [".csv"],
+  "text/tab-separated-values": [".tsv"],
 };
 // The wizard's user-facing steps (the backend also has a terminal "ready").
 const STEP_LABELS = ["Name", "Documents", "Model", "Review", "Onboard"];

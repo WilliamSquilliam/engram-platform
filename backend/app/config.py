@@ -191,6 +191,12 @@ PASSWORD_RESET_EXPIRE_HOURS = int(os.environ.get("PASSWORD_RESET_EXPIRE_HOURS", 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "25"))
 MAX_REQUEST_MB = int(os.environ.get("MAX_REQUEST_MB", "200"))
 
+# OCR page ceiling for scanned/image-only PDFs. Parsing runs INSIDE the upload request and OCR
+# is ~1-2s/page on CPU, so a big scan would tie up the request for minutes — cap it and fail
+# cleanly (asking the user to split the file) rather than block. Only ever hit when a PDF's text
+# layer is (near-)empty and we fall back to rendering + OCR (see parsing._extract_pdf).
+OCR_MAX_PAGES = int(os.environ.get("OCR_MAX_PAGES", "40"))
+
 # Host header allow-list (Starlette TrustedHostMiddleware). Comma-separated; the
 # middleware is only installed when this is set and does not contain "*". Behind the
 # private SSM tunnel / internal ALB the Host is "localhost:<port>" and the ALB

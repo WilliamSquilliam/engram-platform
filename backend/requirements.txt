@@ -23,8 +23,19 @@ redis==5.2.1
 rq==2.1.0
 # Rate limiting for the auth endpoints (brute-force / abuse protection).
 slowapi==0.1.9
-# Document text extraction for the parsing pipeline (control-plane, torch-free):
-# pypdf (PDF), python-docx (DOCX), beautifulsoup4 (HTML tag-strip). All pure-python.
+# Document text extraction for the parsing pipeline (control-plane, torch-free, pure-pip):
+# pypdf (PDF text layer), python-docx (DOCX), beautifulsoup4 (HTML tag-strip).
 pypdf==6.14.2
 python-docx==1.2.0
 beautifulsoup4==4.14.2
+# Scanned-PDF OCR fallback (only when the text layer is empty): render pages with pypdfium2,
+# OCR with RapidOCR (ONNX runtime, CPU — no torch). Pillow bridges the rendered bitmap.
+pypdfium2==5.12.1
+rapidocr-onnxruntime==1.2.3
+Pillow==12.3.0
+# Spreadsheets: openpyxl (.xlsx), xlrd 2.x (.xls-only by design). CSV/TSV use the stdlib csv module.
+openpyxl==3.1.5
+xlrd==2.0.2
+# Legacy .doc: striprtf handles RTF-flavoured .doc; genuine OLE binary .doc converts via LibreOffice
+# (soffice) when present in the deploy image — no pure-python OLE parser is used.
+striprtf==0.0.33
