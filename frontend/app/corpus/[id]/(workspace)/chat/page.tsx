@@ -40,6 +40,15 @@ export default function ChatPage() {
     api.listCorpora().then(setCorpora).catch(() => {});
   }, []);
 
+  // Abort any in-flight stream on unmount so a fetch reader isn't left running after we leave.
+  useEffect(() => () => streamRef.current?.abort(), []);
+
+  // Switching corpora (id changes) points chat at a different resident KV — abort whatever is
+  // streaming from the old corpus so its tokens don't land in the new thread.
+  useEffect(() => {
+    return () => streamRef.current?.abort();
+  }, [id]);
+
   // Keep the thread pinned to the newest message as tokens stream in.
   useEffect(() => {
     const el = scrollRef.current;
@@ -62,6 +71,9 @@ export default function ChatPage() {
     async (question: string, opts: { convoId?: string; priorMessages?: ChatMessage[] } = {}) => {
       const q = question.trim();
       if (!q || busy) return;
+      // Abort any stream still in flight before starting a new one (belt-and-suspenders: busy
+      // usually gates this, but a regenerate or fast resubmit shouldn't leave a dangling reader).
+      streamRef.current?.abort();
       let convoId = opts.convoId ?? activeId;
       if (!convoId) convoId = startNew();
 

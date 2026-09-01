@@ -58,11 +58,23 @@ export function notifyCorporaChanged() {
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
+// A 401 anywhere in the app means the session token is gone or expired. Clear it and bounce to
+// /login rather than letting a stale token spew errors on every panel. login() uses its own fetch
+// (below), so a wrong-password 401 there never reaches this — it stays an inline error.
+function handleUnauthorized() {
+  clearToken();
+  if (typeof window !== "undefined") window.location.href = "/login";
+}
+
 async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = { ...(opts.headers as Record<string, string>) };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_URL}${path}`, { ...opts, headers });
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
   if (!res.ok) {
     let msg: unknown = res.statusText;
     try {
@@ -225,6 +237,7 @@ export const api = {
         }),
         signal: ctrl.signal,
       });
+      if (res.status === 401) { handleUnauthorized(); throw new Error("Session expired"); }
       if (!res.ok || !res.body) throw new Error((await res.text()) || `stream failed (${res.status})`);
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -238,7 +251,10 @@ export const api = {
           const chunk = buf.slice(0, i).trim();
           buf = buf.slice(i + 2);
           if (chunk.startsWith("data: ")) {
-            try { onEvent(JSON.parse(chunk.slice(6))); } catch { /* partial frame */ }
+            // A whole frame was split off at "\n\n", so a parse failure here is a malformed complete
+            // frame (not a partial — buffering already handled those). Warn instead of dropping silently.
+            try { onEvent(JSON.parse(chunk.slice(6))); }
+            catch (err) { console.warn("SSE frame parse failed", err, chunk); }
           }
         }
       }
@@ -302,6 +318,7 @@ export const api = {
       headers: { ...JSON_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ question, k, ...(docIds?.length ? { doc_ids: docIds } : {}) }),
     });
+    if (res.status === 401) { handleUnauthorized(); throw new Error("Session expired"); }
     if (!res.ok || !res.body) throw new Error((await res.text()) || `stream failed (${res.status})`);
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -333,6 +350,7 @@ export const api = {
       headers: { ...JSON_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ queries, max_concurrency: maxConcurrency }),
     });
+    if (res.status === 401) { handleUnauthorized(); throw new Error("Session expired"); }
     if (!res.ok || !res.body) throw new Error((await res.text()) || `scale test failed (${res.status})`);
     const reader = res.body.getReader();
     const dec = new TextDecoder();

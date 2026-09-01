@@ -276,7 +276,6 @@ function MemberRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const invited = member.status === "invited";
 
   async function changeRole(role: MemberRole) {
     if (role === member.role) return;
@@ -304,11 +303,9 @@ function MemberRow({
     <li data-testid="member-row" className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm text-slate-100">{member.name || member.email}</span>
+          <span className="truncate text-sm text-slate-100">{member.email}</span>
           {isSelf && <Badge color="blue">You</Badge>}
-          {invited && <Badge color="amber">Invited</Badge>}
         </div>
-        {member.name && <div className="truncate text-xs text-slate-400">{member.email}</div>}
       </div>
 
       <div className="flex items-center gap-2">

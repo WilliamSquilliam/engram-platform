@@ -32,6 +32,11 @@ export interface Conversation {
 
 const KEY = (corpusId: string) => `engram:chat:${corpusId}`;
 
+// Caps so localStorage can't grow without bound: keep the newest N conversations per corpus, and
+// the newest M messages per conversation. Convos are stored newest-first, messages oldest-first.
+const MAX_CONVERSATIONS = 50;
+const MAX_MESSAGES = 200;
+
 function load(corpusId: string): Conversation[] {
   if (typeof window === "undefined") return [];
   try {
@@ -42,11 +47,32 @@ function load(corpusId: string): Conversation[] {
   }
 }
 
+// Enforce the history caps: drop the oldest conversations past the limit and, within each, trim the
+// oldest messages past the limit.
+function trim(convos: Conversation[]): Conversation[] {
+  return convos.slice(0, MAX_CONVERSATIONS).map((c) =>
+    c.messages.length > MAX_MESSAGES ? { ...c, messages: c.messages.slice(-MAX_MESSAGES) } : c
+  );
+}
+
 function save(corpusId: string, convos: Conversation[]) {
+  const capped = trim(convos);
   try {
-    localStorage.setItem(KEY(corpusId), JSON.stringify(convos));
-  } catch {
-    /* quota / private mode — history is best-effort */
+    localStorage.setItem(KEY(corpusId), JSON.stringify(capped));
+  } catch (err) {
+    // Over quota (or private mode): evict the oldest half of conversations and retry once. If it
+    // still fails, warn rather than silently losing history so the failure is at least visible.
+    if (err instanceof DOMException && err.name === "QuotaExceededError") {
+      const evicted = capped.slice(0, Math.max(1, Math.floor(capped.length / 2)));
+      try {
+        localStorage.setItem(KEY(corpusId), JSON.stringify(evicted));
+        return;
+      } catch (retryErr) {
+        console.warn("chatStore: localStorage quota exceeded; history not saved", retryErr);
+        return;
+      }
+    }
+    console.warn("chatStore: could not persist history", err);
   }
 }
 

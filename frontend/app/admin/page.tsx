@@ -213,7 +213,7 @@ export default function AdminDashboardPage() {
                       <tr key={c.corpus_id} className="hover:bg-slate-800/40">
                         <td className="px-3 py-2">
                           <Link
-                            href={`/corpus/${c.corpus_id}/costs`}
+                            href={`/corpus/${c.corpus_id}`}
                             className="text-slate-100 hover:text-emerald-300 hover:underline"
                           >
                             {c.name}
