@@ -317,10 +317,11 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 ## 6. Phased roadmap
 
-- **Phase 0 — Land the codebase. ✅ (migration done; local run-up pending deps install.)**
-  Migrated `platform/` into this repo, repointed to the `engram-cartridge` pip dependency,
-  untracked/rotated secrets. Remaining: install deps and confirm register → upload → onboard
-  → chat works locally end-to-end.
+- **Phase 0 — Land the codebase. ✅ complete (2026-09-01).** Migrated `platform/` into this
+  repo, repointed to the `engram-cartridge` pip dependency, untracked/rotated secrets, and
+  completed the local end-to-end run-up (waitlist → approve → invite → wizard → queued onboard →
+  team → both dashboards, walked in a real browser; 3 bugs found + fixed). Chat end-to-end
+  remains gated on a serving box (GPU plane).
 - **Phase 1 — Product chat + doc management MVP.** E3 conversational chat with citations; E2
   document-base page with per-doc CRUD, parsing (PDF/DOCX), and change-detection; E6 per-tenant
   namespacing; E1 invite-gated signup + Google. Exit: an invited user can onboard an uploaded
@@ -356,6 +357,20 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-09-01 — Local end-to-end run-up completed (closes Phase 0).** Booted the real stack
+  (control plane on SQLite + Next.js dev; no GPU plane) and walked it in a browser as three
+  users: waitlist request → platform-admin approve → `#token` fragment accept-invite → the full
+  5-step wizard (upload with live parse badges: txt/html Ready, blank-pdf Failed with reason;
+  model tiers; review/estimate; onboard → the 409 "queued for a model" state) → step resume →
+  team invites → tenant Admin Dashboard → Platform Admin console, with role/platform-admin nav
+  gates verified across users. **Three bugs found live and fixed (`feb8dbe`):** the one-time
+  invite link vanished on approval (row-local state unmounted by the list refresh — lifted to
+  the page); configured Google creds lit up the unimplemented Drive connector (availability now
+  = module `IMPLEMENTED` flag AND creds); and all-placeholder model tiers dead-ended the wizard
+  at step 3 (placeholders are now selectable — the serving gate stays at onboard's 409 — so
+  setup completes into the queued state). **Not walked locally:** chat (requires the GPU plane;
+  covered by the stream contract tests until the serving box exists). Suite 159 passed /
+  4 skipped; tsc clean.
 - **2026-09-01 — Production-readiness review + hardening pass shipped.** Three read-only Opus
   reviews (security/isolation, backend correctness, frontend contracts) over the whole codebase.
   **Fundamentals verified clean:** tenant isolation on every route, platform-admin gating, cart
