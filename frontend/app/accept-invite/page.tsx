@@ -1,16 +1,20 @@
 "use client";
-// Accept-invite: a teammate lands here from an emailed link (/accept-invite?token=...), sets a
+// Accept-invite: a teammate lands here from an emailed link (/accept-invite#token=...), sets a
 // password, and is dropped straight into the app with a fresh session token.
-import { Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, setToken } from "@/lib/api";
+import { api, readUrlToken, setToken } from "@/lib/api";
 import { Button, Input, Label, Card, CardBody, CardHeader } from "@/components/ui";
 
 function AcceptInviteInner() {
   const router = useRouter();
-  const params = useSearchParams();
-  const token = params.get("token") || "";
+  // The token rides the URL fragment (client-only), so resolve it in an effect:
+  // null = still resolving, "" = genuinely missing.
+  const [token, setInviteToken] = useState<string | null>(null);
+  useEffect(() => {
+    setInviteToken(readUrlToken() ?? "");
+  }, []);
 
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -20,6 +24,7 @@ function AcceptInviteInner() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!token) return;
     setError("");
     if (password.length < 8) {
       setError("Use at least 8 characters.");
@@ -49,7 +54,7 @@ function AcceptInviteInner() {
           <p className="text-sm text-slate-500">Finish joining your team on Engram.</p>
         </CardHeader>
         <CardBody>
-          {!token ? (
+          {token === null ? null : !token ? (
             <div className="space-y-3 text-sm text-slate-400">
               <p data-testid="invite-error">
                 This invite link is missing its token. Please use the link from your email, or ask your
@@ -109,10 +114,5 @@ function AcceptInviteInner() {
 }
 
 export default function AcceptInvitePage() {
-  // useSearchParams needs a Suspense boundary under the app router.
-  return (
-    <Suspense fallback={null}>
-      <AcceptInviteInner />
-    </Suspense>
-  );
+  return <AcceptInviteInner />;
 }

@@ -1,16 +1,20 @@
 "use client";
-// Reset password: land here from the emailed link (/reset-password?token=...), set a new password,
+// Reset password: land here from the emailed link (/reset-password#token=...), set a new password,
 // then go sign in with it.
-import { Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api } from "@/lib/api";
+import { api, readUrlToken } from "@/lib/api";
 import { Button, Input, Label, Card, CardBody, CardHeader } from "@/components/ui";
 
 function ResetPasswordInner() {
   const router = useRouter();
-  const params = useSearchParams();
-  const token = params.get("token") || "";
+  // The token rides the URL fragment (client-only), so resolve it in an effect:
+  // null = still resolving, "" = genuinely missing.
+  const [token, setResetToken] = useState<string | null>(null);
+  useEffect(() => {
+    setResetToken(readUrlToken() ?? "");
+  }, []);
 
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -20,6 +24,7 @@ function ResetPasswordInner() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!token) return;
     setError("");
     if (password.length < 8) {
       setError("Use at least 8 characters.");
@@ -64,7 +69,7 @@ function ResetPasswordInner() {
                 Sign in
               </Button>
             </div>
-          ) : !token ? (
+          ) : token === null ? null : !token ? (
             <div className="space-y-3 text-sm text-slate-400">
               <p data-testid="reset-error">
                 This reset link is missing its token. Request a new one from the sign-in page.
@@ -114,9 +119,5 @@ function ResetPasswordInner() {
 }
 
 export default function ResetPasswordPage() {
-  return (
-    <Suspense fallback={null}>
-      <ResetPasswordInner />
-    </Suspense>
-  );
+  return <ResetPasswordInner />;
 }

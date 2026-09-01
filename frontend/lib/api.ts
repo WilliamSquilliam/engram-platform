@@ -48,6 +48,15 @@ export function clearToken() {
   localStorage.removeItem("token");
 }
 
+// Invite / reset links carry their one-time token in the URL FRAGMENT (#token=..., what the
+// backend emits) so the token never reaches server logs or Referer headers; ?token= is a
+// fallback for hand-edited links. Fragment is client-only, so callers read it in an effect.
+export function readUrlToken(): string | null {
+  if (typeof window === "undefined") return null;
+  const fromHash = new URLSearchParams(window.location.hash.slice(1)).get("token");
+  return fromHash || new URLSearchParams(window.location.search).get("token");
+}
+
 // Cross-component sync: the sidebar and dashboard both render the corpus list
 // with independent state. Any mutation (create/delete/train) dispatches this so
 // every listener refetches — no global store needed.
