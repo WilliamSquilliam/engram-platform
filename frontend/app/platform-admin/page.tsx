@@ -214,7 +214,7 @@ export default function PlatformAdminPage() {
                     <th className="px-3 py-2 text-left font-medium">Plan</th>
                     <th className="px-3 py-2 text-left font-medium">Status</th>
                     <th className="px-3 py-2 text-right font-medium">Users</th>
-                    <th className="px-3 py-2 text-right font-medium">Corpora</th>
+                    <th className="px-3 py-2 text-right font-medium">Document Bases</th>
                     <th className="px-3 py-2 text-right font-medium">Created</th>
                   </tr>
                 </thead>

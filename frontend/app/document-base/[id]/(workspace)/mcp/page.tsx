@@ -23,13 +23,13 @@ export default function McpPage() {
       <CardHeader>
         <h2 className="font-medium">Expose as MCP server</h2>
         <p className="text-xs text-slate-400">
-          Point any MCP-capable LLM (e.g. Claude) at this corpus as a tool — it queries the
+          Point any MCP-capable LLM (e.g. Claude) at this document base as a tool — it queries the
           expert at a fraction of the token cost of ingesting the documents directly.
         </p>
       </CardHeader>
       <CardBody className="space-y-2 text-sm">
         {!corpus.mcp_token ? (
-          <p className="text-slate-400">Train the corpus to generate an MCP access token.</p>
+          <p className="text-slate-400">Train the document base to generate an MCP access token.</p>
         ) : (
           <>
             <div>

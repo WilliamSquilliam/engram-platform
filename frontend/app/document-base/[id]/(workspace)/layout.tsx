@@ -34,7 +34,7 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
       try {
         const c = await api.getCorpus(id);
         if (c.status !== "ready") {
-          router.replace(`/corpus/${id}/setup`);
+          router.replace(`/document-base/${id}/setup`);
           return;
         }
         setCorpus(c);
@@ -98,7 +98,7 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
             return (
               <Link
                 key={n.seg}
-                href={`/corpus/${id}/${n.seg}`}
+                href={`/document-base/${id}/${n.seg}`}
                 className={cn(
                   "border-b-2 px-4 py-2 text-sm font-medium transition",
                   active

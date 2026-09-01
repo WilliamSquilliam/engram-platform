@@ -21,7 +21,7 @@ router = APIRouter(prefix="/corpora", tags=["corpora"])
 def get_owned_corpus(db: Session, user: User, corpus_id: str) -> Corpus:
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     return corpus
 
 

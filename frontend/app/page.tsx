@@ -13,7 +13,7 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 function hrefFor(c: any): string {
-  return c.status === "ready" ? `/corpus/${c.id}/chat` : `/corpus/${c.id}/setup`;
+  return c.status === "ready" ? `/document-base/${c.id}/chat` : `/document-base/${c.id}/setup`;
 }
 
 export default function Dashboard() {
@@ -61,18 +61,18 @@ export default function Dashboard() {
   return (
     <div className="mx-auto max-w-6xl p-8">
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold">Your Corpora</h1>
+        <h1 className="text-2xl font-semibold">Your Document Bases</h1>
         <p className="text-sm text-slate-400">
-          Each corpus is a knowledge base trained into composable KV cartridges.
+          Each document base is a knowledge base trained into composable KV cartridges.
         </p>
       </div>
 
       {corpora.length === 0 ? (
         <Card>
           <CardBody className="flex flex-col items-center gap-3 py-12 text-center">
-            <p className="text-sm text-slate-400">No corpora yet.</p>
-            <Link href="/corpus/new">
-              <Button data-testid="empty-new-corpus">+ New Corpus</Button>
+            <p className="text-sm text-slate-400">No document bases yet.</p>
+            <Link href="/document-base/new">
+              <Button data-testid="empty-new-corpus">+ New Document Base</Button>
             </Link>
           </CardBody>
         </Card>

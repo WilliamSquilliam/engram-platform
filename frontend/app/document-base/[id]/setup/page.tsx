@@ -1,6 +1,6 @@
 "use client";
 // Resumable onboarding wizard — the 5-step flow over the onboarding endpoints:
-//   1 Name       rename the corpus (created in /corpus/new)
+//   1 Name       rename the corpus (created in /document-base/new)
 //   2 Documents  upload files; Google Drive / SharePoint render as disabled "coming soon"
 //   3 Model      GET /models — tiers; unavailable tiers render but aren't selectable ("coming soon")
 //   4 Review     GET /corpora/{id}/estimate — doc count, file types, size, est. time + cost
@@ -67,7 +67,7 @@ export default function OnboardingWizard() {
   const train = useTrainingJob(id, (job) => {
     // Onboarding finished (or stopped). Success -> the corpus is ready; go to chat.
     if (job.status === "succeeded") {
-      router.replace(`/corpus/${id}/chat`);
+      router.replace(`/document-base/${id}/chat`);
     } else if (job.status === "failed") {
       setNote("Onboarding failed: " + (job.detail || "unknown error"));
       goto("review");
@@ -105,7 +105,7 @@ export default function OnboardingWizard() {
       try {
         const { c, st } = await load();
         if (c.status === "ready") {
-          router.replace(`/corpus/${id}/chat`);
+          router.replace(`/document-base/${id}/chat`);
           return;
         }
         if (c.status === "training") {
@@ -245,7 +245,7 @@ export default function OnboardingWizard() {
         className="text-sm text-slate-400 hover:text-slate-200"
         data-testid="setup-exit"
       >
-        ← All Corpora
+        ← All Document Bases
       </button>
       <h1 className="mt-2 mb-4 text-2xl font-semibold" data-testid="setup-title">{corpus.name}</h1>
       <div className="mb-6">
@@ -256,7 +256,7 @@ export default function OnboardingWizard() {
       {step === "name" && (
         <Card>
           <CardHeader>
-            <h2 className="font-medium">Name your corpus</h2>
+            <h2 className="font-medium">Name your document base</h2>
             <p className="text-xs text-slate-400">One knowledge base — e.g. a handbook or support KB.</p>
           </CardHeader>
           <CardBody className="space-y-4">
@@ -500,7 +500,7 @@ export default function OnboardingWizard() {
                 </p>
                 <div className="flex gap-2">
                   <Button variant="outline" onClick={() => goto("review")} data-testid="gated-back">Back to review</Button>
-                  <Button variant="outline" onClick={() => router.push("/")}>All Corpora</Button>
+                  <Button variant="outline" onClick={() => router.push("/")}>All Document Bases</Button>
                 </div>
               </CardBody>
             </Card>
@@ -528,8 +528,8 @@ export default function OnboardingWizard() {
                   </div>
                 </div>
                 <p className="text-xs text-slate-500">
-                  You can leave this page — onboarding keeps running and the corpus stays under
-                  “Corpora” as <b>Training</b>. Click it there to return here.
+                  You can leave this page — onboarding keeps running and the document base stays under
+                  “Document Bases” as <b>Training</b>. Click it there to return here.
                 </p>
                 <div className="flex justify-between">
                   <Button variant="danger" onClick={() => train.cancel()} data-testid="cancel-onboard">

@@ -19,7 +19,7 @@ import type { Corpus } from "@/lib/types";
 const SUGGESTIONS = [
   "Summarize the key points across these documents.",
   "What are the main risks or open questions?",
-  "Find where this corpus talks about pricing.",
+  "Find where this document base talks about pricing.",
 ];
 
 export default function ChatPage() {
@@ -234,24 +234,24 @@ export default function ChatPage() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Corpus picker */}
         <div className="flex items-center gap-2 border-b border-slate-800 px-4 py-2">
-          <span className="text-xs text-slate-500">Corpus</span>
+          <span className="text-xs text-slate-500">Document Base</span>
           <select
             data-testid="corpus-picker"
             value={id}
-            onChange={(e) => router.push(`/corpus/${e.target.value}/chat`)}
+            onChange={(e) => router.push(`/document-base/${e.target.value}/chat`)}
             className="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-600"
           >
             {readyCorpora.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
-            {!readyCorpora.some((c) => c.id === id) && <option value={id}>This corpus</option>}
+            {!readyCorpora.some((c) => c.id === id) && <option value={id}>This document base</option>}
           </select>
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto" data-testid="chat-thread">
           {empty ? (
             <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-6 text-center">
-              <h2 className="text-2xl font-semibold text-slate-100">Chat with your corpus</h2>
+              <h2 className="text-2xl font-semibold text-slate-100">Chat with your document base</h2>
               <p className="mt-2 text-sm text-slate-400">
                 Ask anything — answers stream straight from the resident documents, with sources.
               </p>
@@ -293,7 +293,7 @@ export default function ChatPage() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
                 rows={1}
-                placeholder="Message your corpus…"
+                placeholder="Message your document base…"
                 className="max-h-52 min-h-[1.5rem] flex-1 resize-none bg-transparent text-sm text-slate-100 placeholder-slate-500 outline-none"
               />
               {busy ? (

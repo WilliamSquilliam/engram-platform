@@ -18,7 +18,7 @@ const STATUS_DOT: Record<string, string> = {
 };
 
 function hrefFor(c: any) {
-  return c.status === "ready" ? `/corpus/${c.id}/chat` : `/corpus/${c.id}/setup`;
+  return c.status === "ready" ? `/document-base/${c.id}/chat` : `/document-base/${c.id}/setup`;
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -68,7 +68,7 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
     router.push("/login");
   }
 
-  const activeId = pathname.startsWith("/corpus/") ? pathname.split("/")[2] : null;
+  const activeId = pathname.startsWith("/document-base/") ? pathname.split("/")[2] : null;
 
   return (
     <div className="flex h-screen flex-col">
@@ -106,21 +106,21 @@ function Shell({ pathname, children }: { pathname: string; children: React.React
             data-testid="sidebar"
           >
             <div className="p-3">
-              <Link href="/corpus/new">
+              <Link href="/document-base/new">
                 <Button data-testid="new-corpus" className="w-full gap-2">
-                  <span className="text-base leading-none">+</span> New Corpus
+                  <span className="text-base leading-none">+</span> New Document Base
                 </Button>
               </Link>
             </div>
             <div className="px-4 pb-1 text-xs font-medium uppercase tracking-wide text-slate-400">
-              Corpora
+              Document Bases
             </div>
             <nav className="flex-1 space-y-0.5 overflow-y-auto px-2" data-testid="sidebar-corpora">
               {corpora.map((c) => (
                 <SidebarItem key={c.id} c={c} active={c.id === activeId} onChange={refresh} />
               ))}
               {corpora.length === 0 && (
-                <p className="px-3 py-2 text-sm text-slate-400">No corpora yet.</p>
+                <p className="px-3 py-2 text-sm text-slate-400">No document bases yet.</p>
               )}
             </nav>
             <div className="space-y-0.5 border-t border-slate-800 p-2">

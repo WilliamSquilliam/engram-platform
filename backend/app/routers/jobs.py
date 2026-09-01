@@ -81,7 +81,7 @@ def _run_training(corpus_id: str, job_id: str) -> None:
                     for fn in filenames]
             docs = [d for d in docs if d["text"].strip()]
             if not docs:
-                raise RuntimeError("no readable text documents in corpus")
+                raise RuntimeError("no readable text documents in document base")
             progress_url = f"{config.BACKEND_INTERNAL_URL}/internal/jobs/{job_id}/progress"
             if config.INFERENCE_BACKEND == "vllm":
                 # Resident-KV serving: onboard = build a CAG cart per doc (one forward pass, no
@@ -224,7 +224,7 @@ def start_training(
 ):
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     if not storage.list_doc_filenames(corpus_id):
         raise HTTPException(400, "Upload documents before training")
     return _job_resp(dispatch_training(db, background, corpus))
@@ -237,7 +237,7 @@ def cancel_training(corpus_id: str, user: User = Depends(get_current_user), db: 
     response and then aborts cooperatively (maps to Temporal cancel on AWS)."""
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     job = (
         db.query(Job)
         .filter(Job.corpus_id == corpus_id, Job.status == "running")
@@ -268,7 +268,7 @@ def get_job(job_id: str, user: User = Depends(get_current_user), db: Session = D
 def list_jobs(corpus_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     jobs = db.query(Job).filter(Job.corpus_id == corpus_id).order_by(Job.created_at.desc()).all()
     return [_job_resp(j) for j in jobs]
 

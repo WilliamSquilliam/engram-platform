@@ -1,6 +1,6 @@
 "use client";
 // New Corpus wizard — Step 1: name. Creating the corpus here gives it an id, so
-// the rest of the flow (upload + train) lives at /corpus/[id]/setup and is
+// the rest of the flow (upload + train) lives at /document-base/[id]/setup and is
 // resumable from the dashboard even if the user navigates away mid-training.
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -24,9 +24,9 @@ export default function NewCorpusPage() {
     setErr("");
     try {
       const c = await api.createCorpus(name.trim());
-      router.replace(`/corpus/${c.id}/setup`);
+      router.replace(`/document-base/${c.id}/setup`);
     } catch (e: any) {
-      setErr(e.message || "Could not create corpus");
+      setErr(e.message || "Could not create document base");
       setBusy(false);
     }
   }
@@ -40,16 +40,16 @@ export default function NewCorpusPage() {
       >
         ← Cancel
       </button>
-      <h1 className="text-2xl font-semibold mt-2 mb-4">New Corpus</h1>
+      <h1 className="text-2xl font-semibold mt-2 mb-4">New Document Base</h1>
       <div className="mb-6">
         <Stepper steps={["Name", "Documents", "Model", "Review", "Onboard"]} current={0} />
       </div>
 
       <Card>
         <CardHeader>
-          <h2 className="font-medium">Name Your Corpus</h2>
+          <h2 className="font-medium">Name Your Document Base</h2>
           <p className="text-xs text-slate-400">
-            A corpus is one knowledge base (e.g. a product handbook or a support KB).
+            A document base is one knowledge base (e.g. a product handbook or a support KB).
           </p>
         </CardHeader>
         <CardBody>

@@ -50,7 +50,7 @@ export default function DocumentsPage() {
           })}
           {docs.length === 0 && <li className="py-1.5 text-slate-500">No documents.</li>}
         </ul>
-        <Link href={`/corpus/${id}/setup`}>
+        <Link href={`/document-base/${id}/setup`}>
           <Button variant="outline" data-testid="add-docs">Add documents / re-train</Button>
         </Link>
       </CardBody>

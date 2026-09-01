@@ -1,5 +1,5 @@
 "use client";
-// /corpus/[id] is a router: ready corpora go to the workspace (Chat), others
+// /document-base/[id] is a router: ready corpora go to the workspace (Chat), others
 // resume the onboarding wizard. Keeps deep links and old bookmarks working.
 import { useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
@@ -17,7 +17,7 @@ export default function CorpusIndex() {
     (async () => {
       try {
         const c = await api.getCorpus(id);
-        router.replace(c.status === "ready" ? `/corpus/${id}/chat` : `/corpus/${id}/setup`);
+        router.replace(c.status === "ready" ? `/document-base/${id}/chat` : `/document-base/${id}/setup`);
       } catch {
         router.replace("/login");
       }

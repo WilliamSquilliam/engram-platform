@@ -138,7 +138,7 @@ export default function AdminDashboardPage() {
             <Stat label="Documents" value={num(usage?.documents)} />
             <Stat label="Storage" value={gb(usage?.storage_gb)} />
             <Stat label="GPU time" value={gpu(usage?.gpu_seconds)} />
-            <Stat label="Corpora" value={num(usage?.n_corpora)} />
+            <Stat label="Document Bases" value={num(usage?.n_corpora)} />
           </div>
 
           {/* Queries over time — recharts area chart. */}
@@ -195,13 +195,13 @@ export default function AdminDashboardPage() {
 
           {/* Per-corpus breakdown table. */}
           <div>
-            <div className="mb-2 text-xs uppercase tracking-wider text-slate-500">By corpus</div>
+            <div className="mb-2 text-xs uppercase tracking-wider text-slate-500">By document base</div>
             {usage && usage.by_corpus.length > 0 ? (
               <div className="overflow-x-auto rounded-lg border border-slate-800">
                 <table className="w-full text-sm" data-testid="usage-by-corpus">
                   <thead className="bg-slate-950 text-xs uppercase tracking-wider text-slate-500">
                     <tr>
-                      <th className="px-3 py-2 text-left font-medium">Corpus</th>
+                      <th className="px-3 py-2 text-left font-medium">Document Base</th>
                       <th className="px-3 py-2 text-right font-medium">Queries</th>
                       <th className="px-3 py-2 text-right font-medium">Documents</th>
                       <th className="px-3 py-2 text-right font-medium">Storage</th>
@@ -213,7 +213,7 @@ export default function AdminDashboardPage() {
                       <tr key={c.corpus_id} className="hover:bg-slate-800/40">
                         <td className="px-3 py-2">
                           <Link
-                            href={`/corpus/${c.corpus_id}`}
+                            href={`/document-base/${c.corpus_id}`}
                             className="text-slate-100 hover:text-emerald-300 hover:underline"
                           >
                             {c.name}
@@ -229,7 +229,7 @@ export default function AdminDashboardPage() {
                 </table>
               </div>
             ) : (
-              <p className="text-sm text-slate-500">No corpora yet.</p>
+              <p className="text-sm text-slate-500">No document bases yet.</p>
             )}
           </div>
         </CardBody>
@@ -286,7 +286,7 @@ export default function AdminDashboardPage() {
 
       {/* Data controls: per-corpus training cost & break-even live under each corpus. */}
       <p className="text-xs text-slate-500">
-        Looking for per-corpus cost and break-even? Open a corpus and visit its{" "}
+        Looking for per-document-base cost and break-even? Open a document base and visit its{" "}
         <span className="text-slate-300">Costs</span> tab. Manage teammates on the{" "}
         <Link href="/team" className="text-emerald-300 hover:underline">Team</Link> page.
       </p>

@@ -25,7 +25,7 @@ router = APIRouter(tags=["chat"])
 
 def _answer(corpus: Corpus, req: ChatReq) -> ChatResp:
     if corpus.status != "ready":
-        raise HTTPException(400, f"Corpus not ready (status={corpus.status})")
+        raise HTTPException(400, f"Document base not ready (status={corpus.status})")
     if config.INFERENCE_BACKEND == "vllm":
         # Resident-KV serving: control plane retrieves the cart doc_ids, the Inference Service serves
         # them (no per-query document prefill). Retrieval lives here (C2 split), not on the GPU.
@@ -43,7 +43,7 @@ def _answer(corpus: Corpus, req: ChatReq) -> ChatResp:
         else:
             doc_ids = retrieval.retrieve(corpus.id, req.question, req.k)
             if not doc_ids:
-                raise HTTPException(404, "no documents to retrieve for this corpus")
+                raise HTTPException(404, "no documents to retrieve for this document base")
         result = ml_client.inference_query(doc_ids, req.question, config.INFERENCE_MAX_TOKENS,
                                            history=[m.model_dump() for m in req.history])
         # tier="cartridge": the non-stream serve path always answers cart-alone (adaptive escalation
@@ -69,7 +69,7 @@ def _answer(corpus: Corpus, req: ChatReq) -> ChatResp:
 def chat(request: Request, corpus_id: str, req: ChatReq, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     return _answer(corpus, req)
 
 
@@ -116,9 +116,9 @@ def chat_stream(
     corpus on the vLLM backend (the streaming serve path); the HF path has no token stream."""
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     if corpus.status != "ready" or config.INFERENCE_BACKEND != "vllm":
-        raise HTTPException(400, "streaming chat needs a ready corpus on the vLLM backend")
+        raise HTTPException(400, "streaming chat needs a ready document base on the vLLM backend")
     history = [m.model_dump() for m in req.history]
 
     # Resolve doc_ids ONCE. A follow-up turn echoes the first turn's doc_ids so retrieval is skipped
@@ -133,7 +133,7 @@ def chat_stream(
     else:
         doc_ids = retrieval.retrieve(corpus.id, req.question, req.k)
         if not doc_ids:
-            raise HTTPException(404, "no documents to retrieve for this corpus")
+            raise HTTPException(404, "no documents to retrieve for this document base")
     sources = retrieval.doc_sources(corpus.id, doc_ids)
 
     _theta = config.ADAPTIVE_THETA

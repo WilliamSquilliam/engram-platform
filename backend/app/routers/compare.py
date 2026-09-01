@@ -68,7 +68,7 @@ def _compare_vllm(corpus, req: ChatReq, n: int, side: str = "both") -> dict:
     else:
         doc_ids, context = retrieval.retrieve_context(corpus.id, req.question, req.k)
         if not doc_ids:
-            raise HTTPException(404, "no documents to retrieve for this corpus")
+            raise HTTPException(404, "no documents to retrieve for this document base")
     sources = retrieval.doc_sources(corpus.id, doc_ids)
     history = [m.model_dump() for m in req.history]
 
@@ -139,16 +139,16 @@ def compare_stream(
     Smart CAG side first, then RAG — modern-chatbot feel with the same honest measurement."""
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     if corpus.status != "ready" or config.INFERENCE_BACKEND != "vllm":
-        raise HTTPException(400, "streaming compare needs a ready corpus on the vLLM backend")
+        raise HTTPException(400, "streaming compare needs a ready document base on the vLLM backend")
     history = [m.model_dump() for m in req.history]
     if side == "cart":
         # Resident-KV side: needs doc_ids only (never the raw text) — retrieval.retrieve
         # is one call; on the fused backend that's the question's ONLY GPU retrieval trip.
         doc_ids = retrieval.retrieve(corpus.id, req.question, req.k)
         if not doc_ids:
-            raise HTTPException(404, "no documents to retrieve for this corpus")
+            raise HTTPException(404, "no documents to retrieve for this document base")
         url = f"{config.INFERENCE_SERVICE_URL}/query_stream"
         payload = {"doc_ids": doc_ids, "question": req.question,
                    "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history}
@@ -165,7 +165,7 @@ def compare_stream(
         else:  # rag side called standalone (direct API use) — retrieve as before
             doc_ids, context = retrieval.retrieve_context(corpus.id, req.question, req.k)
             if not doc_ids:
-                raise HTTPException(404, "no documents to retrieve for this corpus")
+                raise HTTPException(404, "no documents to retrieve for this document base")
         url = f"{config.INFERENCE_SERVICE_URL}/rag_query_stream"
         payload = {"context": context, "question": req.question,
                    "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history}
@@ -264,9 +264,9 @@ def compare(
 ):
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     if corpus.status != "ready":
-        raise HTTPException(400, f"Corpus not ready (status={corpus.status})")
+        raise HTTPException(400, f"Document base not ready (status={corpus.status})")
 
     # Production serve path: measured head-to-head on the live vLLM engine (cart vs RAG baseline).
     if config.INFERENCE_BACKEND == "vllm":
@@ -416,9 +416,9 @@ def scale_test_stream(
     """Stream a real concurrency ramp (SSE). Per level: {level, cart:{qps,ttft,lat,...}, rag:{...}}."""
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     if corpus.status != "ready" or config.INFERENCE_BACKEND != "vllm":
-        raise HTTPException(400, "scale test needs a ready corpus on the vLLM backend")
+        raise HTTPException(400, "scale test needs a ready document base on the vLLM backend")
     queries = [q.strip() for q in (req.queries or []) if q.strip()][:16]
     if not queries:
         raise HTTPException(400, "provide at least one query")
@@ -472,7 +472,7 @@ def save_scale_run(
     """Persist a finished scale-test run (the tab POSTs its accumulated per-level points here on done)."""
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     if not body.points:
         raise HTTPException(400, "no points to save")
     run = ScaleRun(corpus_id=corpus_id, max_concurrency=body.max_concurrency,
@@ -497,7 +497,7 @@ def list_scale_runs(
     """Past scale-test runs for this corpus, newest first (points included — runs are small)."""
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
-        raise HTTPException(404, "Corpus not found")
+        raise HTTPException(404, "Document base not found")
     runs = (db.query(ScaleRun).filter(ScaleRun.corpus_id == corpus_id)
             .order_by(ScaleRun.created_at.desc()).limit(_SCALE_RUNS_KEEP).all())
     return [_scale_run_resp(r) for r in runs]
