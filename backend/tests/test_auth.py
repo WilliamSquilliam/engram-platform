@@ -100,6 +100,19 @@ def test_google_callback_accepts_pending_invite(client, auth, monkeypatch):
         db.close()
 
 
+def test_no_duplicate_pending_invites(client, auth):
+    """One live pending invite per (tenant, email): a second invite 409s until the
+    first is revoked (or expires), then reissuing works again."""
+    headers, _ = auth
+    body = {"email": "dupe@example.test", "role": "member"}
+    assert client.post("/admin/invites", json=body, headers=headers).status_code == 200
+    assert client.post("/admin/invites", json=body, headers=headers).status_code == 409
+    invites = client.get("/admin/members", headers=headers).json()["invites"]
+    inv_id = next(i["id"] for i in invites if i["email"] == "dupe@example.test")
+    assert client.delete(f"/admin/invites/{inv_id}", headers=headers).status_code == 204
+    assert client.post("/admin/invites", json=body, headers=headers).status_code == 200
+
+
 def test_forgot_password_never_leaks_link_on_send_failure(client, auth, monkeypatch):
     """PUBLIC route: with a real email backend configured, a FAILED send (SES sandbox,
     outage) must NOT fall back to returning the reset link — that would let anyone mint

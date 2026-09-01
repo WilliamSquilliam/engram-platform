@@ -127,7 +127,7 @@ export default function TeamPage() {
         <CardHeader>
           <h2 className="font-medium">Invite a teammate</h2>
           <p className="text-xs text-slate-400">
-            We&apos;ll email them an invite. If email is gated off, copy the link below and send it yourself.
+            We&apos;ll email them an invite. If it can&apos;t be sent, you&apos;ll get a link to share yourself.
           </p>
         </CardHeader>
         <CardBody className="space-y-4">
@@ -169,7 +169,7 @@ export default function TeamPage() {
                 <>
                   <p className="mb-2 text-xs text-slate-400">
                     Invite for <span className="text-slate-200">{newInvite.email}</span> ({ROLE_LABEL[newInvite.role]}).
-                    Email is off, so share this link:
+                    The invite email couldn&apos;t be sent — share this link:
                   </p>
                   <div className="flex items-center gap-2">
                     <code

@@ -16,6 +16,9 @@ os.environ["JWT_SECRET"] = "test-secret"
 # Force local-only auth (don't pick up a developer's real .env Google creds).
 os.environ["GOOGLE_CLIENT_ID"] = ""
 os.environ["GOOGLE_CLIENT_SECRET"] = ""
+# Hermetic email: a developer's .env may set EMAIL_BACKEND=ses; tests assume the
+# link-in-response (none) behavior and must never attempt real sends.
+os.environ["EMAIL_BACKEND"] = "none"
 # The suite makes many register/login calls from one client IP — turn off the
 # auth rate limiter so it doesn't trip mid-suite.
 os.environ["RATELIMIT_ENABLED"] = "false"

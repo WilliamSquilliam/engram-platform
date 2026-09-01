@@ -82,6 +82,22 @@ def create_invite(
     if existing is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "User is already a member")
 
+    # No duplicate invites: one live pending invite per (tenant, email). A stale
+    # EXPIRED pending invite is replaced silently (delete + reissue below).
+    pending = (
+        db.query(Invite)
+        .filter(Invite.tenant_id == admin.tenant_id, Invite.email == req.email,
+                Invite.accepted_at.is_(None))
+        .first()
+    )
+    if pending is not None:
+        if pending.expires_at > _now():
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "An invite for this email is already pending — revoke it to send a new one",
+            )
+        db.delete(pending)
+
     token = generate_token()
     invite = Invite(
         tenant_id=admin.tenant_id,
