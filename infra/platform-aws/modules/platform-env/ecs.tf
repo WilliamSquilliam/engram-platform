@@ -21,6 +21,10 @@ locals {
   backend_env = [
     { name = "ENV", value = "production" },
     { name = "LOG_LEVEL", value = "INFO" },
+    # Host-header allowlist (TrustedHostMiddleware engages only when set and not '*').
+    # localhost MUST stay: the container healthcheck hits http://localhost:8000/health —
+    # without it every task fails health and cycles. (2026-09 security sweep H1.)
+    { name = "ALLOWED_HOSTS", value = "${var.api_host},localhost" },
 
     # data stores
     { name = "PLATFORM_STORAGE_BACKEND", value = "s3" },

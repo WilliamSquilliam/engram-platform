@@ -52,6 +52,8 @@ export default function LoginPage() {
       // Google round-trip: no remember choice rides the OAuth redirect, so store
       // persistently (the token's lifetime is still the backend's default).
       setToken(t, true);
+      // Scrub the JWT from the address bar + history before navigating away.
+      window.history.replaceState(null, "", window.location.pathname);
       router.push("/");
       return;
     }

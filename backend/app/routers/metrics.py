@@ -1,13 +1,14 @@
-"""Cost-comparison metrics for the demo page. Public (no auth) so it can back a
-marketing/demo view; it computes from a pricing model, touches no tenant data.
-/savings additionally reads the durable measurements table for lifetime aggregates."""
+"""Cost-comparison metrics. Authenticated: these aggregate deployment-wide query
+volume and unit economics (lifetime counts, avg $/query, monthly breakdown) —
+operational intel an invite-only beta must not publish to anonymous callers
+(2026-09 security sweep). The marketing site carries its own static figures."""
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import measurements, metrics
-from ..deps import get_db
-from ..models import Measurement
+from ..deps import get_current_user, get_db
+from ..models import Measurement, User
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
@@ -16,6 +17,7 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 def cost_comparison(
     corpus_tokens: int = Query(1_000_000, ge=1_000, le=100_000_000),
     queries_per_month: int = Query(100_000, ge=1, le=100_000_000),
+    _: User = Depends(get_current_user),
 ):
     """Cartridge (this platform) vs RAG on the same open model. `measured` = the real per-query latency
     / prefill / $ collected at run time on THIS deployment (empty until the first live query); `modeled`
@@ -34,9 +36,9 @@ def _month_bucket(dialect: str):
 
 
 @router.get("/savings")
-def savings(db: Session = Depends(get_db)):
-    """Deployment-level LIFETIME aggregates from the persisted measurements (unauthenticated, matching
-    the rest of this demo router): per-side totals (count, avg latency, avg $/query), the estimated
+def savings(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """Deployment-level LIFETIME aggregates from the persisted measurements (authenticated — see
+    module docstring): per-side totals (count, avg latency, avg $/query), the estimated
     cumulative savings of the cart path vs RAG (per-query cost delta x the number served), and a
     per-month breakdown. Empty/zeroed until the first live query has been recorded."""
     # Per-side rollup: count + averages. func.avg/func.count are portable across sqlite & postgres.

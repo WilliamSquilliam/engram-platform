@@ -62,7 +62,13 @@ export function clearToken() {
 export function readUrlToken(): string | null {
   if (typeof window === "undefined") return null;
   const fromHash = new URLSearchParams(window.location.hash.slice(1)).get("token");
-  return fromHash || new URLSearchParams(window.location.search).get("token");
+  const token = fromHash || new URLSearchParams(window.location.search).get("token");
+  if (token) {
+    // Scrub the token from the address bar + history the moment it's read — otherwise the
+    // one-time link (or a session JWT from the OAuth callback) lingers in browser history.
+    window.history.replaceState(null, "", window.location.pathname);
+  }
+  return token;
 }
 
 // Cross-component sync: the sidebar and dashboard both render the corpus list

@@ -122,15 +122,18 @@ def test_record_survives_db_failure(clean_measurements, monkeypatch):
     assert _count_rows() == 0
 
 
-def test_savings_endpoint_aggregates(client, clean_measurements):
+def test_savings_endpoint_aggregates(client, auth, clean_measurements):
     """Seed a known set and assert the /metrics/savings rollup: per-side counts/averages, the
-    per-query cost delta, cumulative savings, and a monthly bucket. Unauthenticated (demo posture)."""
+    per-query cost delta, cumulative savings, and a monthly bucket. Authenticated since the
+    2026-09 security sweep — deployment-wide economics are not public demo data."""
+    hdr, _email = auth
     # 3 head-to-heads with identical numbers -> deterministic averages.
     for _ in range(3):
         measurements.record(CART, RAG)
 
-    r = client.get("/metrics/savings")
-    assert r.status_code == 200          # no auth header -> still 200 (matches /cost-comparison)
+    assert client.get("/metrics/savings").status_code == 401  # anonymous is refused
+    r = client.get("/metrics/savings", headers=hdr)
+    assert r.status_code == 200
     data = r.json()
 
     assert data["totals"]["cart"]["count"] == 3
@@ -194,9 +197,10 @@ def test_tenant_query_count_isolates_and_total_includes_null(clean_measurements)
         s.close()
 
 
-def test_savings_endpoint_empty(client, clean_measurements):
+def test_savings_endpoint_empty(client, auth, clean_measurements):
     """With no recorded measurements the endpoint returns zeroed totals and no savings (not an error)."""
-    r = client.get("/metrics/savings")
+    hdr, _email = auth
+    r = client.get("/metrics/savings", headers=hdr)
     assert r.status_code == 200
     data = r.json()
     assert data["totals"]["cart"]["count"] == 0

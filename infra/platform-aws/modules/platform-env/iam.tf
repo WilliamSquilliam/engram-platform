@@ -65,12 +65,18 @@ resource "aws_iam_role_policy" "ecs_task_storage" {
 resource "aws_iam_role_policy" "ecs_task_ses" {
   name = "ses-send"
   role = aws_iam_role.ecs_task.id
+  # ses:Send* takes no useful resource ARN, so the from-address CONDITION is the
+  # least-privilege lever: a compromised task can't send as any other verified
+  # identity in the account (2026-09 security sweep L2).
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = ["ses:SendEmail", "ses:SendRawEmail"]
       Resource = "*"
+      Condition = {
+        StringEquals = { "ses:FromAddress" = var.email_from }
+      }
     }]
   })
 }

@@ -1193,6 +1193,21 @@ if _HAS_FASTAPI:
         results = await asyncio.gather(*(_one(d) for d in req.doc_ids))
         return {"descriptions": dict(zip(req.doc_ids, results))}
 
+    def _safe_corpus_dir_or_400(corpus_dir: str) -> str:
+        """Mirror of app.py's corpus_dir confinement (kept local — importing app.py would drag its
+        transformers stack into this process). Same allowlist semantics: ML_ALLOWED_CORPUS_ROOTS
+        (comma-separated) overrides; default is PLATFORM_DATA_DIR (when set) and /data."""
+        env = os.environ.get("ML_ALLOWED_CORPUS_ROOTS", "")
+        if env.strip():
+            roots = [Path(p).resolve() for p in env.split(",") if p.strip()]
+        else:
+            roots = [Path(os.environ.get("PLATFORM_DATA_DIR", "/data")).resolve(), Path("/data").resolve()]
+        p = Path(corpus_dir).resolve()
+        for root in roots:
+            if p == root or p.is_relative_to(root):
+                return str(p)
+        raise HTTPException(400, f"corpus_dir outside the allowed data roots: {corpus_dir}")
+
     class OnboardCagReq(BaseModel):
         # Schema IDENTICAL to app.py's OnboardCagReq — app.py proxies the body verbatim, so this
         # must accept exactly the same fields (any drift breaks the control-plane contract).
@@ -1213,6 +1228,11 @@ if _HAS_FASTAPI:
         routes); the control plane can retry once the box reports engine_ready."""
         if not req.docs:
             raise HTTPException(400, "no documents")
+        # Defense-in-depth corpus_dir confinement (2026-09 security sweep M1): this endpoint never
+        # writes under corpus_dir today (carts persist by cart_id through the store), but the
+        # contract says confinement holds on BOTH onboarding paths — and a future filesystem use
+        # of the field must not become a traversal. Mirrors app.py's allowlist exactly.
+        _safe_corpus_dir_or_400(req.corpus_dir)
         if not _engine_ready():
             raise HTTPException(503, "engine not ready; retry once the box reports engine_ready")
         report, cancel_event = _make_reporter(req.progress_url, req.progress_token)
