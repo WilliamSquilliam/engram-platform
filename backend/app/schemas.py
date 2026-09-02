@@ -433,4 +433,55 @@ class SourceRef(BaseModel):
 class ChatResp(BaseModel):
     answer: str
     used_docs: list[str]
+
+
+# --- source connectors (Google Drive / SharePoint) --------------------------------------------
+
+class ConnectorAuthorizeResp(BaseModel):
+    """The provider consent URL the SPA redirects itself to (we don't 302 the XHR)."""
+    url: str
+
+
+class ConnectionResp(BaseModel):
+    """A tenant's authorized source connection (no tokens ever exposed — only the account label)."""
+    id: str
+    provider: str
+    account_label: str
+    created_at: datetime.datetime
+
+
+class BrowseFolderResp(BaseModel):
+    """A folder the user can drill into. `id` is an opaque provider ref the client passes straight back
+    (Drive file id / "root"; SharePoint "site:<id>" or "item:<driveId>:<itemId>")."""
+    id: str
+    name: str
+
+
+class BrowseResp(BaseModel):
+    folders: list[BrowseFolderResp]
+    supported_files: int  # count of importable files AT THIS LEVEL (not recursive)
+    path_hint: str        # human label for where we are ("My Drive" / "SharePoint sites" / ...)
+
+
+class ImportReq(BaseModel):
+    """Start importing a connected source's folder into the corpus. folder_id is the opaque provider
+    ref from browse; site_id is only needed for a SharePoint site's default library (optional)."""
+    connection_id: str
+    folder_id: str = ""
+    folder_name: str = Field(default="", max_length=400)
+    site_id: str | None = None
+
+
+class ImportStatusResp(BaseModel):
+    """Latest ImportRun for a corpus, or {"state": "none"} when nothing has been imported. Counters are
+    live while state == 'running'."""
+    state: str  # none|running|done|failed|limited
+    id: str | None = None
+    folder_name: str | None = None
+    imported: int = 0
+    skipped: int = 0
+    failed: int = 0
+    error: str | None = None
+    created_at: datetime.datetime | None = None
+    finished_at: datetime.datetime | None = None
     sources: list[SourceRef] = []

@@ -200,11 +200,17 @@ def _drive_download_one(token: str, file_id: str, mime_type: str, max_bytes: int
     return _stream_to_buffer(url, params, token, max_bytes)
 
 
-def drive_walk(token: str, folder_id: str, max_bytes: int) -> Iterator[tuple[str, Callable[[], bytes]]]:
+# A download callable takes a (possibly refreshed) access token and returns the file bytes, so the
+# import worker can hand it a fresh token on a mid-run 401 without re-walking the tree.
+Downloader = Callable[[str], bytes]
+
+
+def drive_walk(token: str, folder_id: str, max_bytes: int) -> Iterator[tuple[str, Downloader]]:
     """Recursively yield (relative_path, download_callable) for every supported file under `folder_id`.
     Folders are walked breadth-first; the total number of items CONSIDERED is capped at
     _MAX_FILES_PER_RUN so a giant tree stops cleanly. Google-native docs get an exported extension so
-    the parser recognizes them (e.g. a Doc becomes '<name>.docx')."""
+    the parser recognizes them (e.g. a Doc becomes '<name>.docx'). The download callable takes the
+    access token as an argument so a 401-refresh can retry with a fresh one."""
     considered = 0
     # queue of (drive_folder_id, relative_prefix)
     stack: list[tuple[str, str]] = [(folder_id or "root", "")]
@@ -231,8 +237,8 @@ def drive_walk(token: str, folder_id: str, max_bytes: int) -> Iterator[tuple[str
                         continue  # unsupported native/binary type -> the worker never sees it
                     fid_, mime_ = f["id"], mime
 
-                    def _dl(_id=fid_, _mime=mime_):
-                        return _drive_download_one(token, _id, _mime, max_bytes)
+                    def _dl(tok, _id=fid_, _mime=mime_):
+                        return _drive_download_one(tok, _id, _mime, max_bytes)
 
                     yield rel, _dl
                 page_token = data.get("nextPageToken")
@@ -335,10 +341,11 @@ def _graph_download_one(token: str, drive_id: str, item_id: str, max_bytes: int)
 
 
 def graph_walk(token: str, folder_id: str, site_id: str | None,
-               max_bytes: int) -> Iterator[tuple[str, Callable[[], bytes]]]:
+               max_bytes: int) -> Iterator[tuple[str, Downloader]]:
     """Recursively yield (relative_path, download_callable) for every supported file under the folder.
     Resolves the starting endpoint from the opaque id, then walks nested folders via each child's own
-    drive/item ids. Capped at _MAX_FILES_PER_RUN considered items."""
+    drive/item ids. Capped at _MAX_FILES_PER_RUN considered items. The download callable takes the
+    access token as an argument so a 401-refresh can retry with a fresh one."""
     considered = 0
     start = _graph_children_url(folder_id, site_id)
     stack: list[tuple[str, str]] = [(start, "")]
@@ -364,8 +371,8 @@ def graph_walk(token: str, folder_id: str, site_id: str | None,
                         item_id = child["id"]
                         rel = f"{prefix}{name}"
 
-                        def _dl(_d=drive_id, _i=item_id):
-                            return _graph_download_one(token, _d, _i, max_bytes)
+                        def _dl(tok, _d=drive_id, _i=item_id):
+                            return _graph_download_one(tok, _d, _i, max_bytes)
 
                         yield rel, _dl
                 url = body.get("@odata.nextLink")

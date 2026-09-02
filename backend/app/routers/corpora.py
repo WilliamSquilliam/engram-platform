@@ -1,21 +1,36 @@
 """Corpus + document management. Every query is scoped to the caller's tenant."""
+import datetime
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+import httpx
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from .. import limits, ml_client, usage
 from ..audit import record_event
 from ..config import MAX_REQUEST_MB, MAX_UPLOAD_MB
+from ..connectors import providers
+from ..db import SessionLocal
 from ..deps import get_current_user, get_db
-from ..models import Corpus, Document, Tenant, User
+from ..models import ConnectorConnection, Corpus, Document, ImportRun, Tenant, User
 from ..parsing import SUPPORTED_EXTS, extract_text
 from ..retrieval import cart_id_for, invalidate_index
-from ..schemas import CorpusCreateReq, CorpusResp, DocumentResp
+from ..schemas import (
+    CorpusCreateReq,
+    CorpusResp,
+    DocumentResp,
+    ImportReq,
+    ImportStatusResp,
+)
 from ..storage import safe_rel, storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/corpora", tags=["corpora"])
+
+
+def _now() -> datetime.datetime:
+    # Naive UTC to match the DateTime columns (see models._now).
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
 
 
 def get_owned_corpus(db: Session, user: User, corpus_id: str) -> Corpus:
@@ -247,3 +262,186 @@ def list_documents(corpus_id: str, user: User = Depends(get_current_user), db: S
     corpus = get_owned_corpus(db, user, corpus_id)
     docs = db.query(Document).filter(Document.corpus_id == corpus.id).all()
     return [_doc_resp(d) for d in docs]
+
+
+# --- import from a connected source (Google Drive / SharePoint) --------------------------------
+# Import walks a connected folder and feeds each supported file through the SAME save path uploads use
+# (storage.save_document + a Document row + text extraction), so imported and uploaded documents are
+# indistinguishable downstream. It runs in a background thread (the codebase's parse/train background
+# pattern) and reports progress via an ImportRun row (GET .../import-status).
+
+def _save_imported_file(db: Session, corpus: Corpus, rel_path: str, data: bytes) -> None:
+    """Persist one imported file EXACTLY like an upload: raw bytes to storage, extracted text sidecar,
+    and an idempotent Document row keyed on (corpus, path). The doc-limit check happens in the worker
+    BEFORE this is called, so a save here is already within the cap."""
+    fname = safe_rel(rel_path)
+    key, size = storage.save_document(corpus.id, fname, data)
+    text, ok, parse_error = extract_text(fname, data)
+    storage.save_text(corpus.id, fname, text if ok else "")
+    parse_status = "parsed" if ok else "failed"
+    doc = (
+        db.query(Document)
+        .filter(Document.corpus_id == corpus.id, Document.filename == fname)
+        .first()
+    )
+    if doc is None:
+        doc = Document(corpus_id=corpus.id, filename=fname, storage_key=key, size=size,
+                       parse_status=parse_status, parse_error=parse_error or None)
+        db.add(doc)
+    else:
+        doc.storage_key, doc.size = key, size
+        doc.parse_status, doc.parse_error = parse_status, parse_error or None
+
+
+def _walk_for(provider: str, token: str, folder_id: str, site_id: str | None, max_bytes: int):
+    """The provider-specific recursive file walk (Drive vs Graph), yielding (rel_path, downloader)."""
+    if provider == "google_drive":
+        return providers.drive_walk(token, folder_id, max_bytes)
+    return providers.graph_walk(token, folder_id, site_id, max_bytes)
+
+
+def _run_import(run_id: str, connection_id: str, folder_id: str, site_id: str | None) -> None:
+    """Background worker: walk the connected folder and import every supported file, updating the
+    ImportRun counters as it goes. Contract:
+      - Enforce the beta document limit BEFORE each save; on 429 stop gracefully, state='limited'
+        (what imported so far is KEPT).
+      - Oversized (> MAX_UPLOAD_MB) or unsupported files -> skipped++ (never a crash).
+      - A per-file error -> failed++, continue to the next file.
+      - A 401 on a download -> refresh the token once and retry that file.
+    Runs in its own Session (background thread), like the training worker."""
+    db = SessionLocal()
+    try:
+        run = db.get(ImportRun, run_id)
+        if run is None:
+            return
+        corpus = db.get(Corpus, run.corpus_id)
+        conn = db.get(ConnectorConnection, connection_id)
+        if corpus is None or conn is None:
+            run.state = "failed"
+            run.error = "The document base or connection no longer exists."
+            run.finished_at = _now()
+            db.commit()
+            return
+        tenant = db.get(Tenant, corpus.tenant_id)
+        max_bytes = MAX_UPLOAD_MB * 1024 * 1024
+        try:
+            token = providers.access_token(db, conn)
+            for rel_path, download in _walk_for(conn.provider, token, folder_id, site_id, max_bytes):
+                # Beta document cap: check with the LIVE count before each save so a run stops at the
+                # cap with everything before it kept. incoming=1 (this file).
+                try:
+                    if tenant is not None:
+                        limits.check_document_limit(
+                            tenant, usage.tenant_document_count(db, corpus.tenant_id), incoming=1
+                        )
+                except HTTPException as exc:
+                    if exc.status_code == 429:
+                        run.state = "limited"
+                        run.error = "Reached the workspace document limit; imported files were kept."
+                        break
+                    raise
+                # Download (size-capped stream). ImportSizeExceeded -> skipped. A 401 -> refresh once.
+                try:
+                    data = download(token)
+                except providers.ImportSizeExceeded:
+                    run.skipped += 1
+                    db.commit()
+                    continue
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 401:
+                        token = providers.access_token(db, conn, force_refresh=True)
+                        try:
+                            data = download(token)
+                        except providers.ImportSizeExceeded:
+                            run.skipped += 1
+                            db.commit()
+                            continue
+                    else:
+                        run.failed += 1
+                        db.commit()
+                        continue
+                try:
+                    _save_imported_file(db, corpus, rel_path, data)
+                    run.imported += 1
+                except Exception:  # noqa: BLE001 — one bad file must not abort the whole import
+                    logger.exception("import: failed to save %s", rel_path)
+                    run.failed += 1
+                db.commit()
+            else:
+                # Loop finished without hitting the limit-break.
+                run.state = "done"
+            # A "documents" re-import invalidates a prior "ready" state (new docs to onboard), mirroring
+            # the upload path so the wizard doesn't sit on a stale terminal screen.
+            if run.imported and corpus.status == "ready":
+                corpus.status = "new"
+                corpus.onboarding_step = "documents"
+        except HTTPException as exc:
+            # A clean provider/config error (503 needs-reconfig, 401 expired) surfaced as a failed run.
+            run.state = "failed"
+            run.error = str(exc.detail)[:400]
+        except Exception as exc:  # noqa: BLE001 — any unexpected error fails the run cleanly, no 500 path
+            logger.exception("import run %s failed", run_id)
+            run.state = "failed"
+            run.error = f"Import failed ({type(exc).__name__})."
+        if run.state == "running":  # safety net if we broke out without setting a terminal state
+            run.state = "done"
+        run.finished_at = _now()
+        db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/{corpus_id}/import", response_model=ImportStatusResp)
+def start_import(
+    corpus_id: str,
+    req: ImportReq,
+    background: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Import a connected source's folder into this document base. Requires ownership of the base AND
+    that the connection belong to the same tenant (a cross-tenant connection id 404s). 409 if an import
+    for this base is already running. The walk + downloads happen in the background; poll import-status."""
+    get_owned_corpus(db, user, corpus_id)  # 404s if not this tenant's base
+    conn = db.get(ConnectorConnection, req.connection_id)
+    if conn is None or conn.tenant_id != user.tenant_id:
+        raise HTTPException(404, "Connection not found")
+    running = (
+        db.query(ImportRun)
+        .filter(ImportRun.corpus_id == corpus_id, ImportRun.state == "running")
+        .first()
+    )
+    if running is not None:
+        raise HTTPException(409, "An import for this document base is already running")
+    run = ImportRun(
+        corpus_id=corpus_id, connection_id=conn.id, folder_id=req.folder_id or "",
+        folder_name=req.folder_name or "", state="running",
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    background.add_task(_run_import, run.id, conn.id, req.folder_id or "", req.site_id)
+    return _import_status_resp(run)
+
+
+@router.get("/{corpus_id}/import-status", response_model=ImportStatusResp)
+def import_status(corpus_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Latest import run for this document base, or {"state": "none"} if nothing has been imported."""
+    get_owned_corpus(db, user, corpus_id)
+    run = (
+        db.query(ImportRun)
+        .filter(ImportRun.corpus_id == corpus_id)
+        .order_by(ImportRun.created_at.desc())
+        .first()
+    )
+    if run is None:
+        return ImportStatusResp(state="none")
+    return _import_status_resp(run)
+
+
+def _import_status_resp(run: ImportRun) -> ImportStatusResp:
+    return ImportStatusResp(
+        state=run.state, id=run.id, folder_name=run.folder_name,
+        imported=run.imported, skipped=run.skipped, failed=run.failed, error=run.error,
+        created_at=run.created_at, finished_at=run.finished_at,
+    )

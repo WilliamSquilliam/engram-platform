@@ -14,6 +14,9 @@ python-dotenv==1.1.1     # loads .env.local / .env per-environment config
 # signs the session cookie that carries OAuth state across the round-trip.
 authlib==1.6.8
 itsdangerous==2.2.0
+# Fernet symmetric encryption for the source-connector OAuth tokens at rest (connectors/crypto.py).
+# Already present transitively via pyjwt[crypto]; pinned explicitly since we depend on it directly.
+cryptography==46.0.3
 # psycopg is only used when DATABASE_URL points at Postgres (AWS / docker-compose).
 psycopg[binary]==3.2.3
 # Object storage (S3/MinIO) backend, used when PLATFORM_STORAGE_BACKEND=s3.

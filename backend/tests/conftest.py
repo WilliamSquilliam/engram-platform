@@ -16,6 +16,16 @@ os.environ["JWT_SECRET"] = "test-secret"
 # Force local-only auth (don't pick up a developer's real .env Google creds).
 os.environ["GOOGLE_CLIENT_ID"] = ""
 os.environ["GOOGLE_CLIENT_SECRET"] = ""
+# Source connectors OFF by default: pin the OAuth creds empty so a developer's .env can't flip a
+# connector on mid-suite (the connector tests set creds per-test via monkeypatch + oauth.register_all).
+# CONNECTOR_ENC_KEY is pinned to a FIXED valid Fernet key so token encrypt/decrypt round-trips
+# deterministically in tests (a real key is required — the crypto layer refuses to store plaintext).
+os.environ["GDRIVE_CLIENT_ID"] = ""
+os.environ["GDRIVE_CLIENT_SECRET"] = ""
+os.environ["SHAREPOINT_CLIENT_ID"] = ""
+os.environ["SHAREPOINT_CLIENT_SECRET"] = ""
+os.environ["SHAREPOINT_TENANT_ID"] = ""
+os.environ["CONNECTOR_ENC_KEY"] = "hSY0m6cX3n8b1cS8yQnZ0mDqk5b3Kd1n7oFwq2vJ0Xg="
 # Hermetic email: a developer's .env may set EMAIL_BACKEND=ses; tests assume the
 # link-in-response (none) behavior and must never attempt real sends.
 os.environ["EMAIL_BACKEND"] = "none"
