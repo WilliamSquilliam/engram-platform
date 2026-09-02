@@ -18,9 +18,10 @@ from collections.abc import Iterable, Iterator
 from .base import Connector, Document, SourceRef
 from .google_drive import ConnectorNotConfigured
 
-# Flip to True when the Graph app + discover/fetch/delta are actually built (see the matching
-# flag in google_drive.py — the registry ANDs this with the creds check).
-IMPLEMENTED = False
+# Live via routers/connectors.py + app/connectors/providers.py (Graph REST). The registry ANDs this
+# with the creds+enc-key check (see the matching flag in google_drive.py). This class stays the
+# ingestion-seam scaffold; the import path uses the providers module directly.
+IMPLEMENTED = True
 
 
 class SharePointConnector(Connector):

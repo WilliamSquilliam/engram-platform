@@ -233,6 +233,55 @@ class AuditEvent(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, index=True)
 
 
+class ConnectorConnection(Base):
+    """A tenant's authorized link to an external document source (Google Drive / SharePoint).
+
+    Holds the OAuth tokens needed to browse + import on the tenant's behalf, ENCRYPTED at rest
+    (connectors/crypto.py, Fernet) — the columns store ciphertext, never the raw token. One row per
+    (tenant, provider, account): reconnecting the SAME account UPSERTs (re-keys the tokens) rather
+    than piling up duplicates. The uuid pk is unguessable so a connection id can ride the browse/import
+    APIs without being enumerable. tenant_id is the isolation key — every browse/import re-checks that
+    connection.tenant_id == the caller's tenant (cross-tenant use 404s)."""
+    __tablename__ = "connector_connections"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    provider: Mapped[str] = mapped_column(String, index=True)  # "google_drive" | "sharepoint"
+    # Human-readable account the UI shows (Drive: the user email; Graph: userPrincipalName). Part of
+    # the upsert key so one tenant can connect several accounts of the same provider.
+    account_label: Mapped[str] = mapped_column(String)
+    # Fernet ciphertext (connectors/crypto.py). enc_refresh_token is the durable key used to mint fresh
+    # access tokens; enc_access_token/token_expires_at cache the current short-lived one to skip a
+    # refresh when it's still valid. NEVER plaintext.
+    enc_refresh_token: Mapped[str] = mapped_column(Text)
+    enc_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)  # connecting user id
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+
+class ImportRun(Base):
+    """One folder-import run from a connected source into a corpus — the import-status surface.
+
+    Created when POST /corpora/{id}/import starts and updated by the background worker as it walks the
+    folder, so GET /corpora/{id}/import-status can show live progress (imported/skipped/failed) and the
+    terminal outcome. `state`: running -> done | failed | limited ("limited" = stopped early because the
+    workspace hit its beta document cap; whatever imported before the cap is kept). At most one run per
+    corpus is "running" at a time (the import route 409s otherwise)."""
+    __tablename__ = "import_runs"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    corpus_id: Mapped[str] = mapped_column(ForeignKey("corpora.id"), index=True)
+    connection_id: Mapped[str] = mapped_column(String, index=True)
+    folder_id: Mapped[str] = mapped_column(String)
+    folder_name: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, default="running")  # running|done|failed|limited
+    imported: Mapped[int] = mapped_column(Integer, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)

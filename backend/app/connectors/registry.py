@@ -44,19 +44,30 @@ def _connectors() -> list[ConnectorInfo]:
             description="Upload files or drop a folder (.txt .md .pdf .docx .doc .html .xlsx .xls .csv).",
             available=True,  # the always-on path; no external credentials needed
         ),
-        # Availability = implementation exists AND creds configured. Creds alone must never
-        # flip a connector on: the runtime is a NotImplementedError scaffold until the module's
-        # IMPLEMENTED flag is raised with the real OAuth flow.
+        # Availability = the connector's IMPLEMENTED flag AND its creds+enc-key gate (config.*_ENABLED,
+        # which already require CONNECTOR_ENC_KEY). Creds alone must never flip a connector on. The
+        # description doubles as the OPERATOR setup note (redirect URI + scopes to register with the
+        # provider) — the same values app/oauth.py sends.
         ConnectorInfo(
             id="google_drive",
             label="Google Drive",
-            description="Connect a Drive folder and sync its documents automatically.",
+            description=(
+                "Connect a Drive folder and import its documents. Operator setup: a Google Cloud OAuth "
+                "client (GDRIVE_CLIENT_ID/SECRET, or reuse GOOGLE_*), scope "
+                "drive.readonly, redirect URI "
+                f"{config.API_BASE_URL}/connectors/google_drive/callback, and CONNECTOR_ENC_KEY set."
+            ),
             available=google_drive.IMPLEMENTED and config.GDRIVE_ENABLED,
         ),
         ConnectorInfo(
             id="sharepoint",
             label="SharePoint",
-            description="Connect a SharePoint site or library and sync its documents.",
+            description=(
+                "Connect a SharePoint site or library and import its documents. Operator setup: a "
+                "multi-tenant Entra ID app (SHAREPOINT_CLIENT_ID/SECRET), delegated scopes "
+                "offline_access Files.Read.All Sites.Read.All User.Read, redirect URI "
+                f"{config.API_BASE_URL}/connectors/sharepoint/callback, and CONNECTOR_ENC_KEY set."
+            ),
             available=sharepoint.IMPLEMENTED and config.SHAREPOINT_ENABLED,
         ),
     ]

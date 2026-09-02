@@ -17,10 +17,12 @@ from collections.abc import Iterable, Iterator
 
 from .base import Connector, Document, SourceRef
 
-# Flip to True when the OAuth dance + discover/fetch/delta are actually built. The registry
-# ANDs this with the creds check — creds alone must never light the connector up (caught in
-# the e2e run-up: a configured Google OAuth client made the UI offer a NotImplementedError).
-IMPLEMENTED = False
+# The live OAuth + browse + import flow is implemented in routers/connectors.py, routers/corpora.py
+# (import), app/oauth.py (Authlib clients) and app/connectors/providers.py (Drive REST). This flag is
+# the product-catalog switch the registry ANDs with the creds+enc-key check — creds alone must never
+# light the connector up. This class stays the ingestion-seam scaffold (discover/fetch/delta); the
+# import path uses the providers module directly, so these methods aren't the live code path.
+IMPLEMENTED = True
 
 
 class ConnectorNotConfigured(RuntimeError):

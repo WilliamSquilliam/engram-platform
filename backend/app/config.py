@@ -128,22 +128,42 @@ GOOGLE_REDIRECT_URI = os.environ.get(
 )
 GOOGLE_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 
-# --- source connectors (E2): OAuth creds gate a connector's availability ------
+# --- source connectors (E2): OAuth creds + an encryption key gate availability ------
 # The connector registry (connectors/registry.py) mirrors serving.py: filesystem is always
 # available; google_drive and sharepoint render as "coming soon" (available=False) until their
-# OAuth app credentials are configured here. Setting both id+secret for a provider flips it on with
-# NO code change. OAuth is NOT implemented yet — these only gate the /connectors availability flag.
+# OAuth app credentials AND the token-encryption key (CONNECTOR_ENC_KEY, below) are configured.
+# Setting a provider's id+secret + the enc key flips it on with NO code change.
 # Google Drive reuses the Google OAuth client (GOOGLE_CLIENT_ID/SECRET) shared with Google sign-in.
 GDRIVE_CLIENT_ID = os.environ.get("GDRIVE_CLIENT_ID", GOOGLE_CLIENT_ID)
 GDRIVE_CLIENT_SECRET = os.environ.get("GDRIVE_CLIENT_SECRET", GOOGLE_CLIENT_SECRET)
-GDRIVE_ENABLED = bool(GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET)
-# SharePoint / Microsoft Graph: an Entra ID (Azure AD) app registration.
+# SharePoint / Microsoft Graph: an Entra ID (Azure AD) app registration. The app must be
+# multi-tenant so any customer M365 org can consent — the OAuth authority is
+# "organizations" by default; SHAREPOINT_TENANT_ID optionally pins a single tenant for testing.
 SHAREPOINT_CLIENT_ID = os.environ.get("SHAREPOINT_CLIENT_ID", "")
 SHAREPOINT_CLIENT_SECRET = os.environ.get("SHAREPOINT_CLIENT_SECRET", "")
 SHAREPOINT_TENANT_ID = os.environ.get("SHAREPOINT_TENANT_ID", "")
+
+# Fernet key (urlsafe base64, 32 bytes) that encrypts OAuth refresh/access tokens AT REST in the
+# connector_connections table. Generate with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# When UNSET a connector reports unavailable exactly like missing OAuth creds — tokens are NEVER
+# stored in plaintext. Rotating this key invalidates existing connections (decrypt then 503s asking
+# the user to reconnect); the connect flow is idempotent so reconnecting simply re-encrypts.
+CONNECTOR_ENC_KEY = os.environ.get("CONNECTOR_ENC_KEY", "")
+
+# Availability = the registry's IMPLEMENTED flag AND creds AND the enc key. Creds alone (or the key
+# alone) must never flip a connector on — a connection with no way to decrypt its tokens is useless.
+GDRIVE_ENABLED = bool(GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET and CONNECTOR_ENC_KEY)
+# TENANT_ID is an OPTIONAL single-tenant override, NOT required for availability (the app is
+# multi-tenant against "organizations"), so it's intentionally left out of the gate.
 SHAREPOINT_ENABLED = bool(
-    SHAREPOINT_CLIENT_ID and SHAREPOINT_CLIENT_SECRET and SHAREPOINT_TENANT_ID
+    SHAREPOINT_CLIENT_ID and SHAREPOINT_CLIENT_SECRET and CONNECTOR_ENC_KEY
 )
+
+# Public base URL of THIS control-plane API — used to build each connector's OAuth redirect URI
+# ({API_BASE_URL}/connectors/{provider}/callback), which the operator registers with the provider.
+# Defaults to the local dev API; set to the real https API origin in production.
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
 # --- auth backend: local JWT (default) or OIDC/JWKS (Keycloak/Cognito/...) -----
 # local: our /auth/register+login mint HS256 JWTs verified with JWT_SECRET.
