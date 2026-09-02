@@ -1,127 +1,77 @@
 [
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_00901"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_00901"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_01705"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_01705"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_02166"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_02166"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_02543"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_02543"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_04012"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_04012"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_06068"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_06068"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_06081"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1601_06081"
-  },
-  {
-    "q": "Up to how many times faster are QRNNs than LSTMs at train and test time?",
-    "expect_substring": "16",
-    "doc_id": "1611_01576"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1804_09301"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1804_09301"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1807_11714"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1807_11714"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1811_00942"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1811_00942"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1901_11117"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1901_11117"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1908_11365"
-  },
-  {
-    "q": "",
-    "expect_substring": "",
-    "doc_id": "1908_11365"
-  }
+ {
+  "doc_id": "1601_00901",
+  "q": "What dataset was used to evaluate the joint ontology and semantic parser approach?",
+  "expect_substring": "Wikipedia"
+ },
+ {
+  "doc_id": "1601_00901",
+  "q": "What type of grammar is induced from the semantically annotated text in the joint ontology learning approach?",
+  "expect_substring": "context-free"
+ },
+ {
+  "doc_id": "1601_00901",
+  "q": "Which knowledge base provides the relations used as the training set for relation prediction in the ontology learning paper?",
+  "expect_substring": "DBpedia"
+ },
+ {
+  "doc_id": "1601_01705",
+  "q": "What are the two jointly trained components of the dynamic neural module network?",
+  "expect_substring": "layout"
+ },
+ {
+  "doc_id": "1601_01705",
+  "q": "What form of supervision does the dynamic neural module network require for training?",
+  "expect_substring": "triples"
+ },
+ {
+  "doc_id": "1601_01705",
+  "q": "What learning technique is used to train the network-assembly parameters in the dynamic neural module network paper?",
+  "expect_substring": "reinforcement"
+ },
+ {
+  "doc_id": "1601_02166",
+  "q": "What multi-parallel text resource is used for annotation projection in the cross-lingual POS tagging work?",
+  "expect_substring": "Bible"
+ },
+ {
+  "doc_id": "1601_02166",
+  "q": "From what are the parameters of the empirical Gaussian prior estimated?",
+  "expect_substring": "source language models"
+ },
+ {
+  "doc_id": "1601_02166",
+  "q": "What optimization algorithm is used to maximize the regularized objectives in the empirical Gaussian priors paper?",
+  "expect_substring": "L-BFGS"
+ },
+ {
+  "doc_id": "1601_02543",
+  "q": "What distance measure is used to identify confusable words at a recognition node in the speech-system evaluation method?",
+  "expect_substring": "Levenshtein"
+ },
+ {
+  "doc_id": "1601_02543",
+  "q": "For which inquiry system was the speech evaluation case study carried out?",
+  "expect_substring": "Railway"
+ },
+ {
+  "doc_id": "1601_02543",
+  "q": "In what language was the railway information speech system developed?",
+  "expect_substring": "Hindi"
+ },
+ {
+  "doc_id": "1601_04012",
+  "q": "Which battle is used as the opening example when introducing event extraction from text?",
+  "expect_substring": "Fredericksburg"
+ },
+ {
+  "doc_id": "1601_04012",
+  "q": "Event extraction applications are discussed for summarization, the medical domain, and posts from which platform?",
+  "expect_substring": "Twitter"
+ },
+ {
+  "q": "Up to how many times faster are QRNNs than LSTMs at train and test time?",
+  "expect_substring": "16",
+  "doc_id": "1611_01576"
+ }
 ]
