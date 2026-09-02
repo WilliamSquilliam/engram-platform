@@ -74,13 +74,17 @@ FACT="The Engram smoke-test mascot is a teal axolotl named Pixel."
 # Must live under the ML service's corpus-dir allowlist (/data by default) — the
 # same root the control plane's corpus_dir paths resolve under (bootstrap creates it).
 CORPUS="/data/smoke_corpus"
-ONB="$(curl -sf -X POST "$ONBOARD_URL/onboard_cag" \
-  -H "$AUTH" -H 'Content-Type: application/json' \
-  -d "$(python3 -c '
-import json,sys
-fact, corpus = sys.argv[1], sys.argv[2]
-print(json.dumps({"corpus_dir":corpus,
-                  "docs":[{"doc_id":"smoke-doc","text":"Engram Smoke Test\n\n"+fact}]}))' "$FACT" "$CORPUS")" || true)"
+# The corpus path must NOT cross the bash->python boundary as a leading-slash string:
+# on Git Bash (Windows), MSYS rewrites absolute-POSIX-looking values in BOTH argv and
+# env when spawning native exes (/data/... -> C:/Program Files/Git/data/...), which
+# corrupted corpus_dir and 400'd at the ML service's allowlist. Ship it slash-less and
+# re-prefix inside python, where MSYS can't touch it.
+ONB="$(SMOKE_FACT="$FACT" SMOKE_CORPUS_REL="${CORPUS#/}" python3 -c '
+import json,os
+print(json.dumps({"corpus_dir":"/"+os.environ["SMOKE_CORPUS_REL"],
+                  "docs":[{"doc_id":"smoke-doc","text":"Engram Smoke Test\n\n"+os.environ["SMOKE_FACT"]}]}))' \
+  | curl -sf -X POST "$ONBOARD_URL/onboard_cag" \
+      -H "$AUTH" -H 'Content-Type: application/json' -d @- || true)"
 echo "$ONB" | grep -q '"n_cartridges"' \
   && step "onboard one test doc (:8001)" 1 \
   || step "onboard one test doc (:8001)" 0 "onboard did not return n_cartridges"

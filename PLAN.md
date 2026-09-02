@@ -380,8 +380,24 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
-- **2026-09-02 — First live Command A+ smoke: serving PASSES, onboarding hits the known GATE 2
-  wall — [Q] onboarding path decision needed.** With the venv-PATH (ninja) and /data contract-dir
+- **2026-09-02 — DECIDED + SHIPPED: onboarding goes THROUGH the vLLM engine (path A) — full smoke
+  6/6 on the live box.** The connector gained its SAVE direction (wheel 0.5.0): a request flagged
+  with `cartridge_build_cart_id` in `extra_args` never loads carts; at finish the scheduler returns
+  delay-free-blocks and the worker harvests the full prompt KV out of the paged cache (same fused-
+  layout math as scatter, both stride orders, chunked-prefill-proof), staging per-TP-rank shards that
+  `engine_onboard.collect_rank_shards` merges back to FULL-head carts (TP-agnostic — a cart built at
+  TP=2 serves at TP=1 on a future B200). `vllm_inference` gained `/onboard_cag` (schema + progress
+  reporting identical to the transformers path; same store write, same cc codec) and `app.py`
+  proxies to it behind `ONBOARD_VIA_ENGINE=1` — control-plane contract unchanged, transformers path
+  intact for models it can load. Wins held: onboarding measured at ~2.9s for a 646-token doc on the
+  serving box (no second box, no extra spend), storage identical (same codec/store), serve hot path
+  untouched (every new hook early-returns for non-build requests), `/describe` works against
+  engine-built carts. Validated live: smoke 6/6 — engine_ready, compat_check, engine onboard,
+  grounded query (fact recalled from the cart), measured metrics shape, describe. Also fixed en
+  route: stale-wheel accumulation in the provision staging dirs silently reinstalling old wheels
+  (both dirs now cleaned), and smoke's corpus path being MSYS-mangled on Git Bash.
+  Original finding (kept for the record): serving PASSES but the transformers onboarding path
+  cannot run this model — With the venv-PATH (ninja) and /data contract-dir
   fixes, the 2×H100 box serves Command A+ W4A4: engine_ready over HTTPS, weights load from the FS
   seed in ~17s (61.5 GiB/GPU, Marlin FP4 on H100 — native NVFP4 arrives with a B200), compat_check
   passes, token auth enforced. But `/onboard_cag` cannot build carts: Command A+ is a VISION-language
