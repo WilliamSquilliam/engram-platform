@@ -433,6 +433,7 @@ class SourceRef(BaseModel):
 class ChatResp(BaseModel):
     answer: str
     used_docs: list[str]
+    sources: list[SourceRef] = []
 
 
 # --- source connectors (Google Drive / SharePoint) --------------------------------------------
@@ -484,4 +485,3 @@ class ImportStatusResp(BaseModel):
     error: str | None = None
     created_at: datetime.datetime | None = None
     finished_at: datetime.datetime | None = None
-    sources: list[SourceRef] = []
