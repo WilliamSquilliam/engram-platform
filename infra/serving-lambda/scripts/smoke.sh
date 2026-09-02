@@ -71,8 +71,9 @@ fi
 # distinctive fact the query answer must contain.
 # ---------------------------------------------------------------------------
 FACT="The Engram smoke-test mascot is a teal axolotl named Pixel."
-CORPUS="/opt/engram/smoke_corpus"
-# corpus_dir is created on the box by the onboarding worker; a stable path is fine.
+# Must live under the ML service's corpus-dir allowlist (/data by default) — the
+# same root the control plane's corpus_dir paths resolve under (bootstrap creates it).
+CORPUS="/data/smoke_corpus"
 ONB="$(curl -sf -X POST "$ONBOARD_URL/onboard_cag" \
   -H "$AUTH" -H 'Content-Type: application/json' \
   -d "$(python3 -c '

@@ -62,7 +62,9 @@ case "$TARGET" in
 
   gpu)
     [ -f "$SSH_KEY" ] || die "no SSH key at $SSH_KEY (run serving-lambda/scripts/launch.sh once)"
-    IP="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("ip",""))' "$STATE_FILE" 2>/dev/null || true)"
+    # Parse the IP in pure bash: with MSYS path conversion disabled (needed for the
+    # CloudWatch group names above), Windows python can no longer open a /c/... path.
+    IP="$(sed -n 's/.*"ip": *"\([^"]*\)".*/\1/p' "$STATE_FILE" 2>/dev/null | head -1)"
     [ -n "$IP" ] || die "no box IP in $STATE_FILE — is the GPU running? (Platform Admin tab or scripts/launch.sh)"
     SSH=(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "ubuntu@$IP")
     case "$KIND" in

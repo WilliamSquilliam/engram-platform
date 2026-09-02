@@ -84,6 +84,12 @@ WHEEL="$(ls "$APP_DIR"/wheels/engram_cartridge-*.whl | head -1)"
 log "creating local-SSD storage tier under $HOME_ENGRAM (ephemeral)"
 mkdir -p "$HOME_ENGRAM/hf" "$HOME_ENGRAM/cart_cache" "$HOME_ENGRAM/registry"
 chown -R "$RUN_USER":"$RUN_USER" "$HOME_ENGRAM"
+# /data is the CONTRACT path: the control plane sends corpus_dir=/data/corpora/<id>
+# (its own volume layout) and the ML service's corpus-dir allowlist defaults to
+# /data. The AWS unit had a RAID0 mounted there; on Lambda it's a plain dir on the
+# big root SSD. Without it every onboard 400s ("outside the allowed data roots").
+mkdir -p /data/corpora
+chown -R "$RUN_USER":"$RUN_USER" /data
 if [ -d "$FS_ROOT" ]; then
   mkdir -p "$FS_ROOT/hf"
   log "persistent FS present at $FS_ROOT (weights seed target)"

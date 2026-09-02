@@ -380,6 +380,25 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-09-02 — First live Command A+ smoke: serving PASSES, onboarding hits the known GATE 2
+  wall — [Q] onboarding path decision needed.** With the venv-PATH (ninja) and /data contract-dir
+  fixes, the 2×H100 box serves Command A+ W4A4: engine_ready over HTTPS, weights load from the FS
+  seed in ~17s (61.5 GiB/GPU, Marlin FP4 on H100 — native NVFP4 arrives with a B200), compat_check
+  passes, token auth enforced. But `/onboard_cag` cannot build carts: Command A+ is a VISION-language
+  model (`Cohere2VisionConfig`) and the onboarding worker's transformers `AutoModelForCausalLM`
+  forward pass rejects it — the exact GATE 2 FAIL the validation run filed (transformers can't
+  forward-pass this NVFP4 MoE VLM; and dequantized bf16 needs ~224GB, more than the box's 160GB).
+  Serving and onboarding are now on DIFFERENT stacks for this model. Two real paths:
+  **(A) onboard through the vLLM engine** — implement the save direction in `CartridgeKVConnector`
+  (`save_kv_layer` is a deliberate read-only stub today) + an engine onboard endpoint; KV is
+  layout-exact by construction, one box, no new spend — but it's core-IP wheel engineering.
+  **(B) decoupled spot onboarding at higher precision** — `onboard_corpus.py` was built for exactly
+  this shape (spot-safe, S3 store, serve elsewhere): fix the VLM load (language tower via
+  `AutoModelForImageTextToText`), run onboarding on a rented big-VRAM spot box (bf16 ≈ 224GB → 8×A100
+  class, hours not months), and gate on the Phase 5.3 cross-precision equivalence A/B before mapping
+  the refs in `CARTRIDGE_MODEL_EQUIV`. Ships sooner, known tools; adds spot cost per onboarding wave
+  + an equivalence caveat. Recommendation: A for the product (the serving engine is the only thing
+  that can run this model class end to end); B only if carts are needed this week.
 - **2026-09-02 — E12 shipped: GPU start/stop/status from the Platform Admin tab, with unattended
   relaunch.** Backend wraps the official Lambda REST API (`lambda_cloud.py` + `cloudflare_dns.py` +
   `/platform-admin/gpu/*`); Stop = terminate ($0/hr, all durable tiers survive), Start = launch with
