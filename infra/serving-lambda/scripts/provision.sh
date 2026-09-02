@@ -105,6 +105,10 @@ VLLM_GPU_MEM_UTIL=0.90
 VLLM_TORCH_DTYPE=auto
 # --- ML-plane shared-token auth (enforced on every route except /health) ---
 ML_AUTH_TOKEN=$ML_AUTH_TOKEN
+# --- onboard THROUGH the engine: the engine is the only stack that can run this model class; the
+# transformers path stays for models it can load. INFERENCE_SERVICE_URL is box-local (never Caddy). ---
+ONBOARD_VIA_ENGINE=1
+INFERENCE_SERVICE_URL=http://127.0.0.1:8002
 # --- durable cartridge store (S3): onboarding writes, serve reads ---
 # LEAST-PRIVILEGE creds: the aws-support IAM user is scoped to THIS bucket only.
 CARTRIDGE_STORE_BACKEND=s3
