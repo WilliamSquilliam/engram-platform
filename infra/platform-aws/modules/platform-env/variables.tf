@@ -124,9 +124,9 @@ variable "log_retention_days" {
 
 # --- application config ------------------------------------------------------
 variable "email_from" {
-  description = "EMAIL_FROM for transactional email (SES). Must be a verified SES identity in prod."
+  description = "EMAIL_FROM for transactional email (SES). Must be a verified SES identity in prod (the engramdynamics.org DOMAIN is verified, so any address at it works). no-reply@ is an alias the founder receives."
   type        = string
-  default     = "will.stephenson@engramdynamics.org"
+  default     = "no-reply@engramdynamics.org"
 }
 
 variable "platform_admin_email" {
