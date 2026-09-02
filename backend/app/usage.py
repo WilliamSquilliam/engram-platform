@@ -21,7 +21,7 @@ import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .models import Corpus, Document, Job, Measurement
+from .models import Corpus, Document, Measurement
 
 # Default rollup window for the daily series (days). Env would be overkill; a plain constant.
 USAGE_WINDOW_DAYS = 30
@@ -86,6 +86,24 @@ def tenant_query_count(db: Session, tenant_id: str) -> int:
     return int(
         db.query(func.count(Measurement.id))
         .filter(Measurement.side == "cart", Measurement.tenant_id == tenant_id)
+        .scalar() or 0
+    )
+
+
+def tenant_query_count_this_month(db: Session, tenant_id: str) -> int:
+    """Cart-side served-query count for ONE tenant in the CURRENT calendar month (UTC) — the signal the
+    monthly beta query limit (app/limits.py) enforces on. Scoped to created_at >= the first instant of
+    this month so last month's usage rolls off; tenant-filtered (NULL-tenant rows never count). Returns
+    0 when the tenant has served nothing this month."""
+    now = _now()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return int(
+        db.query(func.count(Measurement.id))
+        .filter(
+            Measurement.side == "cart",
+            Measurement.tenant_id == tenant_id,
+            Measurement.created_at >= month_start,
+        )
         .scalar() or 0
     )
 

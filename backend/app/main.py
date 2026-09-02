@@ -16,8 +16,21 @@ from .db import engine, init_db
 from .logging_config import setup_logging
 from .ratelimit import limiter
 from .routers import (
-    admin, audit, auth, chat, compare, connectors, corpora, economics, gpu_admin, jobs,
-    metrics, model_tiers, onboarding, platform_admin,
+    admin,
+    audit,
+    auth,
+    billing,
+    chat,
+    compare,
+    connectors,
+    corpora,
+    economics,
+    gpu_admin,
+    jobs,
+    metrics,
+    model_tiers,
+    onboarding,
+    platform_admin,
 )
 
 setup_logging()
@@ -129,6 +142,7 @@ _bootstrap_admin()
 
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(billing.router)
 app.include_router(platform_admin.router)
 app.include_router(gpu_admin.router)
 app.include_router(corpora.router)

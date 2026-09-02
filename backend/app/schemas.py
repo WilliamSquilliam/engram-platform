@@ -188,7 +188,37 @@ class BillingResp(BaseModel):
     period: str
 
 
+# --- Stripe billing (dark-launched) -----------------------------------------
+
+class BillingStatusResp(BaseModel):
+    """GET /billing/status — always 200, safe when billing is disabled. `enabled` mirrors the flag;
+    `rate_card` is the pricing rate card; `portal_available` tells the UI whether to offer the
+    'manage billing' button."""
+    enabled: bool = False
+    rate_card: dict = {}
+    portal_available: bool = False
+
+
+class BillingPortalResp(BaseModel):
+    """POST /billing/portal — the Stripe billing-portal session URL to redirect the admin to."""
+    url: str
+
+
 # --- E11 platform-admin console: tenants + fleet usage ----------------------
+
+class TenantLimitsReq(BaseModel):
+    """PATCH /platform-admin/tenants/{id}/limits — the 'contact us to raise it' lever. Either field
+    optional; null clears the override (fall back to the config default). 0 means unlimited."""
+    max_docs_override: int | None = Field(default=None, ge=0)
+    max_queries_override: int | None = Field(default=None, ge=0)
+
+
+class TenantLimitsResp(BaseModel):
+    """A tenant's current beta-limit overrides after a PATCH."""
+    tenant_id: str
+    max_docs_override: int | None = None
+    max_queries_override: int | None = None
+
 
 class PlatformTenantResp(BaseModel):
     id: str
