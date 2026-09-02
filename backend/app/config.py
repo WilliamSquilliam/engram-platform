@@ -232,7 +232,9 @@ ALLOW_REGISTRATION = _flag("ALLOW_REGISTRATION", default=not IS_PROD)
 # Two meters (see pricing.py): STRIPE_PRICE_MEMORY_ID = $/onboarded-doc/month, STRIPE_PRICE_INFERENCE_ID
 # = $/1k queries. Internal usage tables stay the source of truth; Stripe is only the rating layer.
 BILLING_ENABLED = _flag("BILLING_ENABLED", default=False)
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
+# Accept STRIPE_API_KEY as an alias (what the operator's .env uses) so the secret key
+# resolves under either name — same tolerance as CLOUDFLARE_API_TOKEN/_API_KEY.
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", os.environ.get("STRIPE_API_KEY", ""))
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_MEMORY_ID = os.environ.get("STRIPE_PRICE_MEMORY_ID", "")
 STRIPE_PRICE_INFERENCE_ID = os.environ.get("STRIPE_PRICE_INFERENCE_ID", "")
