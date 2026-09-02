@@ -30,7 +30,14 @@ SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFil
 # Lambda-side vars (pivot the model/TP here; mirror launch.sh's B200->H100 story).
 CARTRIDGES_MODEL="${CARTRIDGES_MODEL:-CohereLabs/command-a-plus-05-2026-w4a4}"
 VLLM_TP="${VLLM_TP:-1}"                    # 1 for a single B200; set 2 for the 2x H100 SXM fallback
-CONTEXT_TOKENS="${CONTEXT_TOKENS:-131072}"
+# 65536, NOT 131072, on the 2x H100 (160GB): serving 131k needs an >=8GB KV pool which
+# forces GPU_MEM_UTIL>=0.90 and leaves <1GB free — cart load/scatter's ~2GB/GPU transient
+# fp32 decode buffer then OOMs and requests degrade to blank KV (found live). vLLM REJECTS
+# the expandable_segments allocator workaround when a KV connector is configured (VMM page
+# remapping would invalidate connector KV views). 64k covers real product prompts (top-k
+# carts + question + history is ~<32k); 131k returns with the B200 (more VRAM) or the
+# chunked per-layer cart decode (wheel backlog) that shrinks the transient ~64x.
+CONTEXT_TOKENS="${CONTEXT_TOKENS:-65536}"
 FS_NAME="${FS_NAME:-engram-fs}"
 HOST_SERVE="${HOST_SERVE:-gpu.engramdynamics.org}"
 HOST_ONBOARD="${HOST_ONBOARD:-gpu-onboard.engramdynamics.org}"
