@@ -441,6 +441,45 @@ the Decisions log.
 
 (newest first)
 
+- **2026-09-02/03 — Head-to-head benchmark run on the production stack (Command A+, 2×H100,
+  production hybrid retriever in the loop for BOTH arms) — the concurrency advantage HOLDS, and
+  the run flushed out four product-critical bugs before any customer saw them.** Method: 13 QASPER
+  papers onboarded via the engine path (13 docs / 35.4s = 2.72 s/doc at ~2,350 tok/doc; 75.4 MB/doc
+  in the cc store), then closed-loop sweeps at conc 1/8/32/64/128 × {cart, churned-RAG, hot-RAG} on
+  the same engine, same retrieval (bm25s+dense+RRF top-k), bench_fleet methodology (p50s, warmups,
+  Zipf sampling, fact spot-checks). Headline (k=3, churned-RAG = the honest production-RAG arm):
+  cart serves ALL 384 requests at conc 128 at 1.63 qps while churned RAG collapses to 0.157 qps
+  with 62 timeouts at a 900s budget — a ~10× throughput advantage at high concurrency, and 4.5×
+  faster first-token at conc 1 (182ms vs 818ms). Both arms are KV-pool-limited on this box (218B
+  weights leave ~10GB pool → ~11 concurrent k=3 requests computing; see the 65536-context entry);
+  at k=1 the cart advantage is 1.6–2.3× with cart accuracy 15/15. Caveat recorded: hot-cache RAG
+  wins raw qps on a 13-doc corpus because everything fits the prefix cache — an artifact that
+  vanishes when corpus >> cache, which is the entire point of resident carts. Bugs found+fixed by
+  the run: (1) prod retrieval re-embedded the whole corpus EVERY query (~9s/query — now built once
+  per index), (2) cart loads OOM'd at GPU_MEM_UTIL 0.90 (degrade-to-blank-KV), (3) Command A+
+  answers were its THINKING stream (template ignores enable_thinking; reasoning=False is the real
+  knob), (4) multi-cart serving position-broken (next entry).
+- **2026-09-03 — Multi-cart serving made positionally correct (wheel 0.6.1) — THREE stacked
+  defects, plus two deploy-integrity fixes.** The bench (retrieval-in-the-loop ⇒ 3 carts/request,
+  the first real answer-quality test of composition at scale) found multi-cart answers degenerating
+  into repetition loops. Fixed in order of discovery: **(a) claim/scatter geometry mismatch**
+  (pre-existing since the June composition oracle, which only proved equivalence to a reference
+  sharing the flaw): the scheduler claims carts packed at EXACT token offsets but the scatter
+  placed them block-rounded — cart 2+ landed in slots the engine never reads. Carts now pack
+  end-to-end (scatter_tokens_into_paged start_token, mid-block starts). **(b) RoPE rebase**: stored
+  keys carry build-time rotations; 2nd+ carts are now rigid-shift re-rotated to their placement
+  offset (a group action — within-cart geometry preserved exactly). **(c) rotary convention**:
+  Cohere family pairs even/odd indices (interleaved) where Llama half-splits; the codec's
+  de/re-rotation round-trips either way (which is why single-cart never exposed it) but an applied
+  offset rotation in the wrong convention corrupts keys. CARTRIDGE_ROPE_CONVENTION env, per-model,
+  tests derived from the transformers formula INDEPENDENTLY of the wheel's own helpers. Deploy
+  integrity: pip skips same-version wheel installs (a rebuilt-but-unbumped wheel silently never
+  installed — bootstrap now --force-reinstall + version-bump discipline) and a site-packages debug
+  patch survived a provision. Validated live: answer-in-third-cart correct; INFERENCE_TOPK
+  restored to 3 fleet-wide. Residual (filed): composed carts are still SOLO-encoded — k=3 accuracy
+  trails k=1 (verbose narration + one confabulation observed); QRC remains the designed answer for
+  true multi-doc grounding.
+
 - **2026-09-02 — Pricing simplified to TWO meters; onboarding is free.** Memory $0.03/doc/mo
   (was $0.02) + inference $1.30/1k queries; the $0.10/doc onboarding meter is gone. Why: one-time
   revenue becomes recurring (the +1¢/mo recovers onboarding cost in 1–2 months and passes the old
