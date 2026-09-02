@@ -1,6 +1,7 @@
 import "./globals.css";
 import type { ReactNode } from "react";
 import { AppShell } from "@/components/AppShell";
+import { BetaLimitNotice } from "@/components/BetaLimitNotice";
 
 export const metadata = {
   title: "Engram Smart CAG — Cartridge KV Platform",
@@ -14,6 +15,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en" className="h-full">
       <body className="h-full">
         <AppShell>{children}</AppShell>
+        {/* Global, dark until a 429 beta-limit event arrives — see BetaLimitNotice. */}
+        <BetaLimitNotice />
       </body>
     </html>
   );
