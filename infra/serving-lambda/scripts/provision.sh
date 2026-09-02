@@ -105,6 +105,10 @@ VLLM_GPU_MEM_UTIL=0.90
 VLLM_TORCH_DTYPE=auto
 # --- ML-plane shared-token auth (enforced on every route except /health) ---
 ML_AUTH_TOKEN=$ML_AUTH_TOKEN
+# --- onboard THROUGH the engine: the engine is the only stack that can run this model class; the
+# transformers path stays for models it can load. INFERENCE_SERVICE_URL is box-local (never Caddy). ---
+ONBOARD_VIA_ENGINE=1
+INFERENCE_SERVICE_URL=http://127.0.0.1:8002
 # --- durable cartridge store (S3): onboarding writes, serve reads ---
 # LEAST-PRIVILEGE creds: the aws-support IAM user is scoped to THIS bucket only.
 CARTRIDGE_STORE_BACKEND=s3
@@ -153,7 +157,7 @@ set -euo pipefail
 FS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # /lambda/nfs/<fs>/engram
 BUNDLE="$FS_DIR/bundle.tgz"
 [ -f "$BUNDLE" ] || { echo "[self-provision] no bundle at $BUNDLE — run provision.sh once from the operator machine"; exit 1; }
-mkdir -p /tmp/engram-bootstrap
+rm -rf /tmp/engram-bootstrap && mkdir -p /tmp/engram-bootstrap   # never extract over a stale staging dir
 tar -C /tmp/engram-bootstrap -xzf "$BUNDLE"
 chmod +x /tmp/engram-bootstrap/bootstrap-lambda.sh
 bash /tmp/engram-bootstrap/bootstrap-lambda.sh
@@ -175,7 +179,10 @@ done
 ssh "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$SSH_USER@$IP" true 2>/dev/null || die "SSH to $IP not ready"
 
 log "uploading bundle to the box"
-ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" 'mkdir -p /tmp/engram-bootstrap'
+# CLEAN the staging dir first: extractions accumulate across provisions, and a
+# stale older wheel beside the new one gets picked by bootstrap's lexical glob
+# (0.4.2 sorted before 0.5.0 and silently reinstalled the old wheel).
+ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" 'rm -rf /tmp/engram-bootstrap && mkdir -p /tmp/engram-bootstrap'
 scp "${SSH_OPTS[@]}" "$BUNDLE" "$SSH_USER@$IP:/tmp/engram-bootstrap/bundle.tgz" >/dev/null
 
 log "running bootstrap-lambda.sh on the box (venv + vLLM + Caddy — several minutes)"

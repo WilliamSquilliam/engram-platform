@@ -73,6 +73,10 @@ fi
 mkdir -p "$APP_DIR"
 rm -rf "$APP_DIR/ml_service"
 cp -r "$BUNDLE_DIR/ml_service" "$APP_DIR/ml_service"
+# CLEAR stale wheels first: this dir accumulates across provisions and the glob
+# below picks lexically-first — 0.4.2 sorted before 0.5.0 and silently reinstalled
+# the OLD wheel on a re-provision. Only the bundle's wheel may live here.
+rm -rf "$APP_DIR/wheels"
 mkdir -p "$APP_DIR/wheels"
 cp "$WHEEL" "$APP_DIR/wheels/"
 WHEEL="$(ls "$APP_DIR"/wheels/engram_cartridge-*.whl | head -1)"

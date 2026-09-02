@@ -31,6 +31,8 @@ import time
 import uuid
 from pathlib import Path
 
+import httpx
+
 # `cartridges` is a pip dependency (engram-cartridge); import it normally.
 _PLATFORM_DIR = Path(__file__).resolve().parents[1]
 try:
@@ -116,6 +118,22 @@ SERVE_SPEC_LOOKUP_MAX = int(os.environ.get("SERVE_SPEC_LOOKUP_MAX", "4"))
 # The default flips to '0' per-tier ONLY after the GPU gate (token-exact conformance + bench)
 # passes on that tier; until then eager stays the safe default everywhere.
 VLLM_ENFORCE_EAGER = os.environ.get("VLLM_ENFORCE_EAGER", "1") != "0"
+
+# ----- engine-side onboarding knobs (POST /onboard_cag; app.py proxies to it when ONBOARD_VIA_ENGINE
+# is set). This path builds one CAG cart per doc by harvesting the doc's prompt KV FROM the running
+# vLLM engine (the connector stages per-TP-rank shards keyed by cart_id), then merges + persists —
+# the only cart-build route for a model class the transformers forward can't load (quantized MoE VLM).
+# CAG_MAX_DOC_TOK mirrors app.py's transformers-path default EXACTLY (same env, same 4096) so a doc is
+# truncated to the same token budget whichever onboarding path builds it. ONBOARD_ENGINE_CONCURRENCY
+# bounds in-flight per-doc engine submissions (~4; the engine batches internally). CART_STORE_DTYPE
+# mirrors app.py's tier default (cc_aggr on the s3 durable tier, else cc_safe) so blobs are byte-for-
+# byte the same store format regardless of which service wrote them.
+CAG_MAX_DOC_TOK = int(os.environ.get("CAG_MAX_DOC_TOK", "4096"))
+ONBOARD_ENGINE_CONCURRENCY = max(1, int(os.environ.get("ONBOARD_ENGINE_CONCURRENCY", "4")))
+CART_STORE_DTYPE = os.environ.get(
+    "CART_STORE_DTYPE",
+    "cc_aggr" if os.environ.get("CARTRIDGE_STORE_BACKEND", "local").lower() == "s3"
+    else "cc_safe").lower()
 
 
 def _bearer_ok(auth_header: str | None, token: str) -> bool:
@@ -756,6 +774,229 @@ async def _stream_generate(prompt_ids: list[int], cart_ids: list[str] | None, ma
     yield f"data: {_json.dumps({'done': True, 'metrics': metrics})}\n\n"
 
 
+# ============================================================================
+# Engine-side onboarding — POST /onboard_cag
+# ----------------------------------------------------------------------------
+# The onboarding worker's transformers forward (app.py) CANNOT load this model class (a quantized
+# MoE VLM). The ONLY process that can produce this model's KV is the vLLM engine already serving it,
+# so onboarding runs THROUGH the engine: submit each doc's prompt with a build key in
+# SamplingParams.extra_args, the connector harvests that request's full prompt KV at completion and
+# stages per-TP-rank shards under $CARTRIDGE_REGISTRY_DIR/builds/<cart_id>/; we then merge the shards
+# (collect_rank_shards) into a full-head KV, wrap it in a Cartridge (cart_from_kv) and persist via the
+# SAME store write app.py uses. Request/response schema is IDENTICAL to app.py's /onboard_cag: app.py
+# proxies verbatim when ONBOARD_VIA_ENGINE is set, so the control plane sees no difference — including
+# the progress-report mechanism (mirrored below from app.py's _make_reporter).
+
+
+def _make_reporter(progress_url, token):
+    """Non-blocking, failure-proof progress heartbeat + cancel Event — IDENTICAL mechanism to
+    app.py's _make_reporter so the control plane's progress bar/cancel behave the same whichever
+    service ran the onboard. Each POST carries {progress, eta_seconds, detail} with the
+    X-Internal-Token header, runs in a daemon thread with a short timeout, and swallows any error
+    (a slow/down control plane must never stall GPU work). The heartbeat RESPONSE may carry
+    {"cancel": true} (the worker's only inbound channel); when it does we set the Event."""
+    cancel_event = threading.Event()
+    if not progress_url:
+        return (lambda *a, **k: None), cancel_event
+
+    def report(progress, eta_seconds=None, detail=None):
+        def _send():
+            try:
+                resp = httpx.post(
+                    progress_url,
+                    json={"progress": float(progress), "eta_seconds": eta_seconds, "detail": detail},
+                    headers={"X-Internal-Token": token} if token else {},
+                    timeout=3.0,
+                )
+                if resp.json().get("cancel"):
+                    cancel_event.set()
+            except Exception:  # noqa: BLE001  (heartbeats are best-effort)
+                pass
+
+        threading.Thread(target=_send, daemon=True).start()
+
+    return report, cancel_event
+
+
+def _engine_hf_config(st: dict):
+    """The engine's HF model config (for rope_theta / rope_scaling), reached across the sync-LLM and
+    async-engine handle shapes vLLM exposes. Returns the config object or None (None -> rope helpers
+    return None, and a plain-RoPE model needs neither). Kept defensive: the attribute path to
+    model_config differs between vLLM's LLM (llm_engine.model_config) and AsyncLLMEngine
+    (model_config), and the HF config sits under .hf_config on the vLLM ModelConfig."""
+    eng = st.get("engine") or st.get("llm")
+    if eng is None:
+        return None
+    mc = (getattr(eng, "model_config", None)
+          or getattr(getattr(eng, "llm_engine", None), "model_config", None))
+    if mc is None:
+        return None
+    # vLLM's ModelConfig exposes the transformers config as .hf_config (and .hf_text_config for
+    # multimodal, which is the text tower carrying rope_*). Prefer the text config when present.
+    return getattr(mc, "hf_text_config", None) or getattr(mc, "hf_config", None) or mc
+
+
+def _onboard_rope() -> tuple[float | None, dict | None]:
+    """(rope_theta, rope_scaling) for every cart this service builds — the cc store dtypes de-rotate
+    K and need theta at save time, so this must be authoritative for the SERVED weights. The wheel's
+    rope_theta_of/rope_scaling_of read them across transformers versions (config.rope_theta on <5,
+    config.rope_parameters on 5.x). Source order: the engine handle's HF config first (the exact
+    config the engine loaded); if the vLLM handle shape doesn't surface it, fall back to a weights-
+    free AutoConfig.from_pretrained(MODEL) — cheap, CPU-only, and authoritative for rope. Only if
+    BOTH miss do we return None, and then a cc save raises loudly rather than mis-de-RoPE silently."""
+    from cartridges.cartridge import rope_scaling_of, rope_theta_of
+    cfg = _engine_hf_config(_get_engine_state())
+    theta, scaling = rope_theta_of(cfg), rope_scaling_of(cfg)
+    if theta is None:
+        try:
+            from transformers import AutoConfig
+            hf = AutoConfig.from_pretrained(MODEL)
+            hf = getattr(hf, "text_config", None) or hf   # multimodal: rope_* on the text tower
+            theta, scaling = rope_theta_of(hf), rope_scaling_of(hf)
+        except Exception as e:  # noqa: BLE001 — fall through to None; cc save raises if theta needed
+            print(f"[onboard_cag] WARN could not read rope config for {MODEL!r}: {e}", flush=True)
+    return theta, scaling
+
+
+def _get_engine_state() -> dict:
+    """The warm engine state (async when SERVE_ASYNC, else sync). Building lazily here is the same
+    contract every serve route follows; the startup warmup usually has it ready already."""
+    return _aget() if SERVE_ASYNC else _get()
+
+
+def _engine_ready() -> bool:
+    """True once the engine core is built. /onboard_cag needs a live engine to harvest KV; if the
+    warmup hasn't finished we 503 (consistent with streaming's _require_async and the pre-warm
+    behavior of the other routes) rather than block a long build inside the request."""
+    return bool(_astate if SERVE_ASYNC else _state)
+
+
+async def _engine_build_kv(cart_id: str, prompt_ids: list[int]) -> None:
+    """Submit ONE build request to the engine: a 1-token greedy generation over `prompt_ids` whose
+    SamplingParams.extra_args carries the connector's build key. The connector harvests this
+    request's full prompt KV at completion and stages per-TP-rank shards under
+    $CARTRIDGE_REGISTRY_DIR/builds/<cart_id>/. We don't care about the generated token — only that
+    the request runs to completion so the KV is captured. Works on both engine shapes: the async
+    engine yields RequestOutputs, the sync LLM.generate returns a list; both are driven off the
+    threadpool by the caller for the sync path."""
+    from vllm import SamplingParams
+    sp = SamplingParams(max_tokens=1, temperature=0.0,
+                        extra_args={"cartridge_build_cart_id": cart_id})
+    st = _get_engine_state()
+    if SERVE_ASYNC:
+        rid = uuid.uuid4().hex
+        async for _out in st["engine"].generate(_tokens_prompt(prompt_ids), sp, rid):
+            pass
+    else:
+        # Sync LLM: serialize on the serve lock so vLLM's sequential request ids stay consistent
+        # with the query path sharing this engine (mirrors _generate's discipline).
+        def _run():
+            with _lock:
+                st["llm"].generate([_tokens_prompt(prompt_ids)], sp, use_tqdm=False)
+        await run_in_threadpool(_run)
+
+
+def _persist_cart_from_shards(cart_id: str, doc_id: str, token_ids: list[int],
+                              model_ref: str, rope_theta, rope_scaling) -> int:
+    """Merge the staged per-rank KV shards for `cart_id`, wrap them in a Cartridge, and persist via
+    the same store write app.py uses. Returns the cart's kv-token count (p) for the response stats.
+    collect_rank_shards blocks until every TP rank has staged its shard (or times out), merges them
+    to a full-head KV, and cleans up the staging dir; cart_from_kv stamps token_ids/model_ref/rope so
+    the served-side binding gate + cc de-RoPE both hold. Runs off the event loop (blocking torch)."""
+    from cartridges.serve.engine_onboard import cart_from_kv, collect_rank_shards
+    kv = collect_rank_shards(cart_id, REGISTRY_DIR, TENSOR_PARALLEL)
+    cart = cart_from_kv(kv, doc_id, token_ids=token_ids, model_ref=model_ref,
+                        rope_theta=rope_theta, rope_scaling=rope_scaling)
+    _get_engine_state()["store"].put(cart_id, cart, store_dtype=CART_STORE_DTYPE)
+    return cart.num_kv_tokens()
+
+
+async def onboard_cag_via_engine(corpus_dir: str, docs: list[dict], *, build_index: bool = False,
+                                 report=None, should_cancel=None) -> dict:
+    """Build one CAG cart per doc THROUGH the running engine and persist it to the cartridge store —
+    the engine-side mirror of app.py's onboard_cag_corpus, with an IDENTICAL response shape so the
+    control plane stores n_cartridges / seconds / corpus_tokens unchanged.
+
+    Per doc: tokenize with the served tokenizer (add_special_tokens=False, truncated to CAG_MAX_DOC_TOK
+    — the SAME budget the transformers path uses), submit to the engine with the build key, collect
+    the staged shards, build + persist the cart. cart_id == d["doc_id"] exactly as app.py derives it
+    (the control plane already hands us the tenant-namespaced doc id; app.py uses it directly as the
+    store key). Idempotent by doc_id (a cart already in the store is reused, no engine call), and
+    FORCE_REONBOARD=1 rebuilds. Bounded concurrency (~ONBOARD_ENGINE_CONCURRENCY in flight; the engine
+    batches internally). One doc's failure is isolated into the response's per-doc errors and never
+    fails the batch. build_index is accepted for schema parity; the engine box builds no fused index
+    (the retrieval index is the transformers/app.py path's concern), so it is a no-op here."""
+    report = report or (lambda *a, **k: None)
+    should_cancel = should_cancel or (lambda: False)
+    st = _get_engine_state()
+    tok, store = st["tok"], st["store"]
+    model_ref = os.environ.get("CARTRIDGE_SERVED_MODEL_ID") or MODEL
+    rope_theta, rope_scaling = _onboard_rope()
+    force = os.environ.get("FORCE_REONBOARD", "0") == "1"
+    t0 = time.perf_counter()
+    cart_build_s = 0.0  # wall-clock ACTUALLY building carts (excludes idempotent reuse)
+
+    valid = [d for d in docs if d.get("text", "").strip()]
+    corpus_tokens = 0
+    prepared: list[tuple[dict, list[int]]] = []   # (doc, token_ids) for docs that need building
+    n_skipped = 0
+    for d in valid:
+        ids = tok(d["text"], add_special_tokens=False).input_ids[:CAG_MAX_DOC_TOK]
+        corpus_tokens += len(ids)
+        if not force and store.exists(d["doc_id"]):
+            n_skipped += 1
+            continue
+        prepared.append((d, ids))
+
+    n_done = n_skipped                 # carts now in the store (reused + built)
+    errors: dict[str, str] = {}        # doc_id -> error string (per-doc isolation, same shape as batch reporting)
+    n_valid = len(valid)
+    build_lock = asyncio.Lock()        # serialize the shared counters + store puts across tasks
+    sem = asyncio.Semaphore(ONBOARD_ENGINE_CONCURRENCY)
+    canceled = {"v": False}
+
+    report(0.02, None, f"Onboarding {n_valid} document(s) via engine"
+                       + (f" ({n_skipped} reused)" if n_skipped else ""))
+
+    async def _one(doc: dict, ids: list[int]) -> None:
+        nonlocal n_done, cart_build_s
+        if canceled["v"] or should_cancel():
+            canceled["v"] = True
+            return
+        cart_id = doc["doc_id"]        # == the tenant-namespaced id; app.py's store key derivation
+        async with sem:
+            if canceled["v"]:
+                return
+            _bs = time.perf_counter()
+            try:
+                await _engine_build_kv(cart_id, ids)
+                await run_in_threadpool(_persist_cart_from_shards, cart_id, doc["doc_id"], ids,
+                                        model_ref, rope_theta, rope_scaling)
+            except Exception as exc:  # noqa: BLE001 — one bad doc must not sink the batch
+                errors[doc["doc_id"]] = f"{type(exc).__name__}: {exc}"
+                print(f"[onboard_cag] WARN doc {doc['doc_id']!r} failed: {exc}", flush=True)
+                return
+            async with build_lock:
+                n_done += 1
+                cart_build_s += time.perf_counter() - _bs
+                report(0.02 + 0.96 * min(n_done, n_valid) / max(n_valid, 1), None,
+                       f"Onboarded {n_done} cartridge(s)"
+                       + (f" ({n_skipped} reused)" if n_skipped else ""))
+
+    await asyncio.gather(*(_one(d, ids) for d, ids in prepared))
+
+    n_built = n_done - n_skipped
+    if canceled["v"]:
+        return {"n_cartridges": n_done, "canceled": True, "method": "cag_engine",
+                "train_seconds": round(time.perf_counter() - t0, 1),
+                "cart_seconds": round(cart_build_s, 1), "n_built": n_built,
+                "corpus_tokens": corpus_tokens, "errors": errors}
+    return {"n_cartridges": n_done, "canceled": False, "method": "cag_engine",
+            "train_seconds": round(time.perf_counter() - t0, 1),
+            "cart_seconds": round(cart_build_s, 1), "n_built": n_built,
+            "corpus_tokens": corpus_tokens, "errors": errors}
+
+
 if _HAS_FASTAPI:
     app = FastAPI(title="Cartridge vLLM Inference Service")
 
@@ -951,6 +1192,33 @@ if _HAS_FASTAPI:
 
         results = await asyncio.gather(*(_one(d) for d in req.doc_ids))
         return {"descriptions": dict(zip(req.doc_ids, results))}
+
+    class OnboardCagReq(BaseModel):
+        # Schema IDENTICAL to app.py's OnboardCagReq — app.py proxies the body verbatim, so this
+        # must accept exactly the same fields (any drift breaks the control-plane contract).
+        corpus_dir: str
+        docs: list[dict]                 # [{doc_id, text}]
+        build_index: bool = False        # accepted for parity; the engine box builds no fused index
+        job_id: str | None = None
+        progress_url: str | None = None
+        progress_token: str | None = None
+
+    @app.post("/onboard_cag")
+    async def onboard_cag(req: OnboardCagReq):
+        """Build CAG carts for a corpus THROUGH the running vLLM engine (the only process that can
+        produce this model's KV) and persist them to the cartridge store the serve path reads from.
+        Same request/response shape as app.py's /onboard_cag; app.py proxies here when
+        ONBOARD_VIA_ENGINE is set, so the control plane sees no difference (progress reporting
+        included). Engine not yet warm -> 503 (consistent with the pre-warm behavior of the serve
+        routes); the control plane can retry once the box reports engine_ready."""
+        if not req.docs:
+            raise HTTPException(400, "no documents")
+        if not _engine_ready():
+            raise HTTPException(503, "engine not ready; retry once the box reports engine_ready")
+        report, cancel_event = _make_reporter(req.progress_url, req.progress_token)
+        return await onboard_cag_via_engine(
+            req.corpus_dir, req.docs, build_index=req.build_index,
+            report=report, should_cancel=cancel_event.is_set)
 
     _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 

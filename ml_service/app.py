@@ -43,7 +43,7 @@ except ImportError:
 
 import httpx  # noqa: E402
 import torch  # noqa: E402
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from cartridges.budget_manager import BudgetManager  # noqa: E402
@@ -93,6 +93,17 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # engine will actually produce. The cart is stamped model_ref accordingly (see _onboard_model_ref)
 # so a frontend can reject a cart built under weights that don't match the serve tier.
 ONBOARD_WEIGHTS = os.environ.get("ONBOARD_WEIGHTS", "").strip()
+
+# ENGINE-SIDE onboarding (opt-in; default '' = today's transformers path, untouched). When truthy,
+# /onboard_cag PROXIES the request verbatim to the vLLM Inference Service's /onboard_cag, which
+# harvests each doc's KV from the running engine. This is the ONLY cart-build route for a model class
+# the transformers forward can't load (a quantized MoE VLM); the transformers path stays for models it
+# CAN load. INFERENCE_SERVICE_URL is box-local (127.0.0.1:8002) — never through Caddy.
+ONBOARD_VIA_ENGINE = os.environ.get("ONBOARD_VIA_ENGINE", "").strip() not in ("", "0", "false", "False")
+INFERENCE_SERVICE_URL = os.environ.get("INFERENCE_SERVICE_URL", "http://127.0.0.1:8002").rstrip("/")
+# Proxy timeout for the engine-onboard forward: onboarding a whole corpus is minutes+ of GPU work, so
+# match the control plane's long train timeout (default 3600s) rather than a short HTTP default.
+ML_ENGINE_PROXY_TIMEOUT = float(os.environ.get("ML_ENGINE_PROXY_TIMEOUT", "3600"))
 
 
 def _onboard_model_ref() -> str:
@@ -1076,12 +1087,43 @@ def compare_ep(req: CompareReq):
 
 
 @app.post("/onboard_cag")
-def onboard_cag_ep(req: OnboardCagReq):
+async def onboard_cag_ep(request: Request):
     """Build CAG carts for a corpus (the vLLM serve path's onboarding: one forward pass/doc, no
-    training) and persist them to the cartridge store the Inference Service serves from."""
-    if not req.docs:
+    training) and persist them to the cartridge store the Inference Service serves from.
+
+    ONBOARD_VIA_ENGINE off (DEFAULT): today's transformers path, untouched. On: PROXY the request
+    verbatim to the vLLM Inference Service's /onboard_cag (the engine is the only stack that can
+    load this model class), relaying its response and status code unchanged so the control plane
+    sees no difference. corpus_dir confinement is enforced on BOTH paths (fail fast before any
+    forward)."""
+    from fastapi.responses import Response
+    body = await request.body()
+    try:
+        payload = json.loads(body) if body else {}
+    except ValueError:
+        raise HTTPException(400, "invalid JSON body") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "invalid request body")
+    if not payload.get("docs"):
         raise HTTPException(400, "no documents")
-    corpus_dir = _safe_corpus_dir(req.corpus_dir)
+    # corpus_dir confinement runs on the proxy path too — reject before forwarding anything.
+    corpus_dir = _safe_corpus_dir(payload.get("corpus_dir", ""))
+
+    if ONBOARD_VIA_ENGINE:
+        # Forward the VERBATIM body + bearer auth to the box-local engine service. Long timeout:
+        # onboarding a corpus is minutes+ of GPU work. Relay status + body unchanged.
+        headers = {"Content-Type": "application/json"}
+        auth = request.headers.get("authorization")
+        if auth:
+            headers["Authorization"] = auth
+        url = f"{INFERENCE_SERVICE_URL}/onboard_cag"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(ML_ENGINE_PROXY_TIMEOUT)) as client:
+            resp = await client.post(url, content=body, headers=headers)
+        return Response(content=resp.content, status_code=resp.status_code,
+                        media_type=resp.headers.get("content-type", "application/json"))
+
+    # DEFAULT path: build carts in-process via the transformers forward (untouched).
+    req = OnboardCagReq(**payload)
     report, cancel_event = _make_reporter(req.progress_url, req.progress_token)
     with _lock:
         return onboard_cag_corpus(corpus_dir, req.docs, report=report,
