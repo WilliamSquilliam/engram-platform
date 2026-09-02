@@ -204,6 +204,25 @@ DOC_DESCRIPTIONS_ENABLED = _flag("DOC_DESCRIPTIONS_ENABLED", default=True)
 # BOOTSTRAP_ADMIN_* instead. Override with ALLOW_REGISTRATION if you really want it.
 ALLOW_REGISTRATION = _flag("ALLOW_REGISTRATION", default=not IS_PROD)
 
+# --- Stripe billing (DARK-LAUNCHED) + beta limits -------------------------------------------
+# Billing is fully wired but DISABLED by default: with BILLING_ENABLED off the billing router is
+# inert (status is safe, portal 503s, the webhook + usage reporter no-op), so the code ships without
+# charging anyone. Flip BILLING_ENABLED=true only once the four Stripe values below are set (validate()
+# enforces that pairing in prod so a half-configured billing fails the boot, not silently misbills).
+# Two meters (see pricing.py): STRIPE_PRICE_MEMORY_ID = $/onboarded-doc/month, STRIPE_PRICE_INFERENCE_ID
+# = $/1k queries. Internal usage tables stay the source of truth; Stripe is only the rating layer.
+BILLING_ENABLED = _flag("BILLING_ENABLED", default=False)
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_MEMORY_ID = os.environ.get("STRIPE_PRICE_MEMORY_ID", "")
+STRIPE_PRICE_INFERENCE_ID = os.environ.get("STRIPE_PRICE_INFERENCE_ID", "")
+
+# Beta limits — invisible until hit, generous by design (app/limits.py enforces; a platform_admin
+# raises them per-tenant via max_docs_override / max_queries_override). 0 means UNLIMITED. Docs are a
+# lifetime count per workspace; queries are counted per calendar month (UTC).
+BETA_MAX_DOCS_PER_TENANT = int(os.environ.get("BETA_MAX_DOCS_PER_TENANT", "5000"))
+BETA_MAX_QUERIES_PER_MONTH = int(os.environ.get("BETA_MAX_QUERIES_PER_MONTH", "100000"))
+
 # One-shot operator seed (used when open registration is disabled). If both are set
 # and the user doesn't exist yet, it's created at startup. Inject via Secrets Manager.
 BOOTSTRAP_ADMIN_EMAIL = os.environ.get("BOOTSTRAP_ADMIN_EMAIL", "")
@@ -287,5 +306,15 @@ def validate() -> None:
         # The control plane <-> ML/vLLM planes share this bearer token; unset = the ML endpoints
         # (train, onboard, inference) are reachable on the VPC with no auth.
         problems.append("ML_AUTH_TOKEN must be a strong (>=32 char) secret in production")
+    if BILLING_ENABLED and not all(
+        [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_MEMORY_ID, STRIPE_PRICE_INFERENCE_ID]
+    ):
+        # A half-configured billing (flag on, some Stripe value missing) would create customers /
+        # portal sessions but silently fail to meter, or reject every webhook — misbilling. Fail the
+        # boot instead so billing is all-or-nothing.
+        problems.append(
+            "BILLING_ENABLED requires STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, "
+            "STRIPE_PRICE_MEMORY_ID and STRIPE_PRICE_INFERENCE_ID to all be set"
+        )
     if problems:
         raise RuntimeError("Invalid production config:\n  - " + "\n  - ".join(problems))

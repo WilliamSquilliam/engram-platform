@@ -26,6 +26,16 @@ os.environ["LAMBDA_API_KEY"] = ""
 os.environ["CLOUDFLARE_API_TOKEN"] = ""
 os.environ["CLOUDFLARE_API_KEY"] = ""
 os.environ["CLOUDFLARE_ZONE_ID"] = ""
+# Billing is DARK-LAUNCHED (disabled): pin BILLING_ENABLED off + the Stripe secrets empty so a
+# developer's .env can't flip billing on mid-suite or make the SDK reach the network. Tests that
+# exercise the enabled path monkeypatch config.BILLING_ENABLED (and the stripe module) per-test.
+os.environ["BILLING_ENABLED"] = ""
+os.environ["STRIPE_SECRET_KEY"] = ""
+os.environ["STRIPE_WEBHOOK_SECRET"] = ""
+os.environ["STRIPE_PRICE_MEMORY_ID"] = ""
+os.environ["STRIPE_PRICE_INFERENCE_ID"] = ""
+# BETA_MAX_* are left at their config defaults (generous); the limit tests monkeypatch config attrs
+# to small values, following the existing per-test monkeypatch pattern.
 # The suite makes many register/login calls from one client IP — turn off the
 # auth rate limiter so it doesn't trip mid-suite.
 os.environ["RATELIMIT_ENABLED"] = "false"

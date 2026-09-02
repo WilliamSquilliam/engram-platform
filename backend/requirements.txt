@@ -23,6 +23,9 @@ redis==5.2.1
 rq==2.1.0
 # Rate limiting for the auth endpoints (brute-force / abuse protection).
 slowapi==0.1.9
+# Stripe billing (DARK-LAUNCHED via BILLING_ENABLED). Official SDK — never hand-roll Stripe HTTP.
+# Imported lazily in routers/billing.py so it's only loaded when billing is actually enabled.
+stripe==11.4.1
 # Document text extraction for the parsing pipeline (control-plane, torch-free, pure-pip):
 # pypdf (PDF text layer), python-docx (DOCX), beautifulsoup4 (HTML tag-strip).
 pypdf==6.14.2
