@@ -30,6 +30,20 @@ class Tenant(Base):
     # Lifecycle status a platform_admin manages (E11 console). "active" | "suspended" — a
     # suspended tenant is retained but flagged in the fleet view. Enforcement lands later.
     status: Mapped[str] = mapped_column(String, default="active")
+    # --- billing (Stripe dark-launch) + beta-limit overrides ---
+    # Stripe customer id, created lazily on first billing-portal open (routers/billing.py). Null until
+    # billing is enabled AND the tenant opens the portal; the meter-usage reporter only pushes usage for
+    # tenants that have one. Internal usage tables stay the source of truth — Stripe is the rating layer.
+    stripe_customer_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Per-tenant beta-limit overrides — the "contact us to raise it" lever a platform_admin sets
+    # (PATCH /platform-admin/tenants/{id}/limits). When set they WIN over the global config cap; null
+    # means "use the config default". 0 means unlimited (see app/limits.py).
+    max_docs_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_queries_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # High-water mark of queries already reported to Stripe's inference meter, so each report pushes
+    # only the DELTA since the last successful send (idempotent metering). Advanced by
+    # /internal/billing/report-usage after a successful push; 0 until the first report.
+    billing_reported_queries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
 

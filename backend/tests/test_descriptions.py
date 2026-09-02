@@ -118,7 +118,8 @@ def test_estimate_includes_describe_term_only_when_flag_on(monkeypatch):
 # --- migration graph stays single-head ------------------------------------------------------------
 
 def test_alembic_single_head():
-    """The 0011 migration must not fork the revision graph (a multi-head DB won't upgrade cleanly)."""
+    """Migrations must not fork the revision graph (a multi-head DB won't upgrade cleanly). Pinned to
+    the current head so a stray parallel migration is caught; bump this when adding a new revision."""
     from pathlib import Path
 
     from alembic.config import Config
@@ -128,4 +129,4 @@ def test_alembic_single_head():
     cfg = Config(str(backend_dir / "alembic.ini"))
     cfg.set_main_option("script_location", str(backend_dir / "alembic"))
     heads = ScriptDirectory.from_config(cfg).get_heads()
-    assert list(heads) == ["0011_document_description"], heads
+    assert list(heads) == ["0012_tenant_billing"], heads
