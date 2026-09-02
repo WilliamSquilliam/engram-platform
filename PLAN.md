@@ -416,6 +416,18 @@ the Decisions log.
 - **AWS root-key rotation** (operator).
 
 **ML / research:**
+- **CRITICAL — multi-cart RoPE re-base in the connector scatter.** Serving MORE THAN ONE cart
+  per request is position-broken: the 2nd+ carts sit at concatenated offsets while their stored
+  keys keep build-time rotations — answers degenerate into repetition loops (found live on the
+  Command A+ bench; single-cart answers are flawless; historical evidence only ever served one
+  cart/request). Feasible because the cc codec stores keys DE-rotated: re-rotate at scatter to
+  the placement position. Until it ships the fleet serves top-1 (`INFERENCE_TOPK=1`, set in the
+  platform env + bench), which trades recall for correctness.
+- **Chunked per-layer cart decode (restores 131k context on 160GB).** The load-path transient is
+  a ~2GB/GPU whole-cart fp32 buffer; per-layer-group streaming shrinks it ~64x, letting
+  GPU_MEM_UTIL 0.90 + 131k coexist with cart loads (today: 65536 ctx at 0.85 — see Decisions
+  log). vLLM rejects the expandable_segments allocator with a KV connector, so this is the
+  real lever.
 - **recall@k A/B: doc descriptions on vs off** (DOC_DESCRIPTIONS_ENABLED flag exists; one env
   var per arm).
 - **Streamed per-layer-group encode** (the 70B-class onboarding encode lever filed in the

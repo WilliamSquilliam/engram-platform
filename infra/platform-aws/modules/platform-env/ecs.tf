@@ -56,6 +56,11 @@ locals {
 
     # --- serving unit: the four contract values (from remote state or overrides) ---
     { name = "INFERENCE_BACKEND", value = "vllm" },
+    # SINGLE-cart serving until the connector re-bases RoPE for non-first carts: multi-cart
+    # requests place the 2nd+ carts at concatenated offsets their stored rotations don't
+    # match — answers degenerate into repetition loops (found live, 2026-09 bench). Top-1
+    # retrieval serves correct answers; the wheel fix restores k=3 (PLAN.md backlog).
+    { name = "INFERENCE_TOPK", value = "1" },
     { name = "ML_SERVICE_URL", value = local.ml_service_url },
     { name = "INFERENCE_SERVICE_URL", value = local.inference_service_url },
     { name = "MODEL_REGISTRY_JSON", value = local.model_registry_json },
