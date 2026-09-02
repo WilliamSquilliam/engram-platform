@@ -239,6 +239,16 @@ export interface AdminUsage {
   series: UsageSeriesPoint[];
 }
 
+// The two-meter rate card (pricing.rate_card() on the backend): memory is billed per document
+// per month, inference per 1,000 queries, and onboarding is free (per_onboarded_doc_usd is 0).
+// The old per_gb_month_usd key is gone — storage is priced per document now, not per GB.
+export interface RateCard {
+  per_1k_queries_usd: number;
+  per_doc_month_usd: number;
+  per_onboarded_doc_usd: number; // 0.0 — adding documents is free
+  currency: string;
+}
+
 // GET /admin/billing — the current plan, its limits, usage-against-limits, and an estimated cost.
 // A shell for now (billing management is coming soon), so limits/usage are open-ended maps.
 export interface AdminBilling {
@@ -246,11 +256,20 @@ export interface AdminBilling {
   limits: Record<string, number>;
   // Open-ended so the extra aggregate keys the backend puts here (storage_gb, n_corpora, …) are covered.
   usage: Record<string, number>;
-  // The plan's rate card (numeric rates + a "currency" string), surfaced so pricing is visible in one place.
-  rate_card: Record<string, number | string>;
+  // The plan's rate card, surfaced so pricing is visible in one place. Loosely typed to tolerate the
+  // "currency" string alongside the numeric rates; RateCard names the keys the UI actually renders.
+  rate_card: RateCard & Record<string, number | string>;
   estimated_cost_usd: number;
   currency: string;
   period: string;
+}
+
+// GET /billing/status (admin-gated) — the dark-launch flag + the live rate card. Nothing billing
+// related becomes visible until `enabled` flips true; `portal_available` gates the Stripe portal.
+export interface BillingStatus {
+  enabled: boolean;
+  rate_card: RateCard;
+  portal_available: boolean;
 }
 
 // --- E11 Platform Admin (Engram staff only) ----------------------------------------------------

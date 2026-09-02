@@ -5,6 +5,7 @@ import type {
   AdminUsage,
   ApproveAccessResponse,
   AuthConfig,
+  BillingStatus,
   ChatResponse,
   CompareResult,
   ConnectorsResponse,
@@ -79,6 +80,16 @@ export function notifyCorporaChanged() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(CORPORA_CHANGED));
 }
 
+// Beta usage limits stay invisible until a user actually hits one. When any endpoint returns 429
+// with detail {error:"beta_limit", ...}, req() dispatches this alongside throwing the normal error,
+// so a single global listener (BetaLimitNotice) can show one friendly modal while each call site's
+// own inline error handling still runs untouched.
+export const BETA_LIMIT_HIT = "beta-limit-hit";
+export interface BetaLimitDetail {
+  limit: "documents" | "queries" | string;
+  message: string;
+}
+
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
 // A 401 anywhere in the app means the session token is gone or expired. Clear it and bounce to
@@ -100,11 +111,27 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     let msg: unknown = res.statusText;
+    let detail: any = undefined;
     try {
       const j = await res.json();
+      detail = j.detail;
       msg = j.detail || msg;
     } catch {
       /* non-JSON error body */
+    }
+    // Beta usage cap: the backend returns 429 with a friendly, server-written message. Broadcast it
+    // so the global BetaLimitNotice modal pops (once, debounced there), then fall through to throw
+    // the same message string so the call site's inline error rendering still works.
+    if (res.status === 429 && detail && typeof detail === "object" && detail.error === "beta_limit") {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent(BETA_LIMIT_HIT, {
+            detail: { limit: detail.limit, message: detail.message } as BetaLimitDetail,
+          })
+        );
+      }
+      // The thrown message is the friendly server copy so inline notes read cleanly, not a JSON blob.
+      throw new Error(typeof detail.message === "string" ? detail.message : "You have reached a beta limit.");
     }
     throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
   }
@@ -197,6 +224,12 @@ export const api = {
   getUsage: () => req<AdminUsage>("/admin/usage"),
   // Plan, limits, usage-vs-limits, and an estimated cost (a shell — billing management coming soon).
   getBilling: () => req<AdminBilling>("/admin/billing"),
+  // Dark-launch billing flag + rate card. enabled=false means render zero billing UI (no button, no
+  // Stripe mention); enabled=true unlocks the Manage billing button. Admin-gated.
+  billingStatus: () => req<BillingStatus>("/billing/status"),
+  // Opens the Stripe customer portal: 200 {url} when billing is enabled, 503 when it isn't. The
+  // caller sends the browser to `url`. Admin-gated.
+  billingPortal: () => req<{ url: string }>("/billing/portal", { method: "POST" }),
 
   // --- E11 Platform Admin (Engram staff only) ---------------------------------------------------
   // Every tenant on the platform (one row each).
