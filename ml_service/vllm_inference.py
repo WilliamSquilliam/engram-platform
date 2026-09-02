@@ -1033,9 +1033,29 @@ if _HAS_FASTAPI:
     def _warm_engine():
         """Build the vLLM engine NOW (background thread), not on the first user query — the
         cold build takes minutes, which blows through ALB/client timeouts and (pre-lock) let
-        concurrent first-queries race two engine cores onto one GPU."""
-        if os.environ.get("SERVE_WARMUP", "1") == "1":
-            threading.Thread(target=_aget if SERVE_ASYNC else _get, daemon=True).start()
+        concurrent first-queries race two engine cores onto one GPU.
+
+        FAIL LOUD, NOT ZOMBIE: if the build throws (partial weight files mid-seed, a worker
+        shm race, an NCCL flake), a swallowed exception used to leave the service answering
+        /health with engine_ready:false FOREVER — indistinguishable from a slow warm, found
+        live when a provision restarted serve during the FS weight seed. Exit the process
+        instead: systemd (Restart=on-failure, RestartSec=15) relaunches a CLEAN process with
+        no leaked CUDA/worker state, and the restart loop keeps retrying until the build
+        succeeds. In-process retry was rejected — a failed engine build can leave zombie
+        worker procs holding GPU memory that would OOM the retry."""
+        if os.environ.get("SERVE_WARMUP", "1") != "1":
+            return
+
+        def _warm_or_die():
+            try:
+                (_aget if SERVE_ASYNC else _get)()
+            except Exception:  # noqa: BLE001 — anything fatal to the build
+                import traceback
+                print("[warm] ENGINE BUILD FAILED — exiting so systemd restarts a clean "
+                      "process:\n" + traceback.format_exc(), flush=True)
+                os._exit(3)
+
+        threading.Thread(target=_warm_or_die, daemon=True).start()
 
     @app.get("/health")
     def health():

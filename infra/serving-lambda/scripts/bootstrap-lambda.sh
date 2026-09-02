@@ -338,6 +338,15 @@ caddy fmt --overwrite /etc/caddy/Caddyfile >/dev/null 2>&1 || true
 log "enabling + (re)starting units"
 systemctl daemon-reload
 systemctl enable engram-seed-in.service engram-onboard.service engram-serve.service engram-seed-out.service >/dev/null 2>&1 || true
+# Seed weights SYNCHRONOUSLY, in-line, BEFORE serve (re)starts. Unit-level After=
+# only orders the boot transaction — on a provision-driven restart serve came up
+# while seed-in's ~123GB rsync was still running, and the engine warm loaded
+# partial safetensors and died. Running the script inline is deterministic (and a
+# re-run is a cheap rsync no-op); the unit restart after it keeps systemd's view
+# fresh for boot-path ordering. Belt and suspenders with the serve-side fix: a
+# failed warm now exits the process so systemd retries a clean build.
+log "seeding weights from the persistent FS (synchronous — serve starts only after)"
+runuser -u "$RUN_USER" -- "$APP_DIR/bin/seed-weights-in.sh"
 systemctl restart engram-seed-in.service
 systemctl restart engram-onboard.service engram-serve.service
 # --no-block is REQUIRED: seed-out is a oneshot whose ExecStart waits (up to 60
