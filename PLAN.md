@@ -368,17 +368,77 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 **Deferred (not blocking the MVP build):**
 - **Fill the model menu.** Beta enabled model = **Command A+** (see Decisions log). Still open:
-  which models back the other Fast / Balanced / Best tiers, and **verify Command A+ 4-bit on
-  L40S/Ada** (grounded-QA A/B vs the Llama-3.3-70B FP8 fallback) before it goes live.
+  which models back the other Fast / Balanced / Best tiers.
 - **Multi-model routing.** Engine-per-model vs on-demand model load, and how the budget manager
   multiplexes carts across models — build when a second model is enabled.
 - **30B accuracy gate.** The one open research item if/when a 30B tier is offered.
 
 ---
 
+## 7b. Backlog (the single consolidated list — 2026-09-02)
+
+Everything queued, in one place, with its trigger. Newest wins float up; done items move to
+the Decisions log.
+
+**Before general availability (gates wider access):**
+- **Billing enablement (Stripe).** Two-meter pricing decided (see Decisions log 2026-09-02):
+  memory $0.03/doc/mo + inference $1.30/1k queries, onboarding FREE; platform fee per
+  workspace (~$199–499/mo) as the floor; enterprise = dedicated serving instance at annual
+  commit (~GPU cost ×2.5–3 + discounted meters). Build: 2 metered prices + webhook handler +
+  tenant→customer mapping + Stripe Customer Portal button in the E10 dashboard; usage-report
+  job reads the SAME tables the E11 console reads. Update backend pricing.py + BILLING_PLAN.md
+  + estimator meters together.
+- **Fair-use terms.** Free onboarding needs two clauses before GA: onboard-and-delete thrash
+  (any started month bills in full) and re-onboarding churn (reasonable-sync language until
+  change detection ships).
+- **HttpOnly-cookie session migration** (security sweep M2): move JWTs out of Web Storage;
+  requires CSRF protection with it.
+- **SES production access** (operator: AWS request) — email is sandbox-gated today.
+- **Per-doc delete + change detection.** Was product polish; now ALSO the free-onboarding
+  guardrail (skip unchanged docs on re-sync). Priority up.
+
+**Product (post-beta value):**
+- **E4 remote/self-service MCP endpoint** (per-corpus MCP for customers' agents).
+- **Drive / SharePoint OAuth connectors** (scaffolds exist, gated off; operator registers the
+  OAuth apps).
+- **Step-up confirmation on GPU start/stop** (security sweep L3 nicety) + short JWT expiry for
+  the platform-admin account.
+- **DEFAULT_MODEL_TIER env** — currently "balanced" while only "best" exists, so no Default
+  badge renders in the wizard (cosmetic, one env var).
+
+**Platform / infra:**
+- **Prod env go-live**: `terraform apply envs/prod` + `deploy.sh prod <uat-proven sha>` once
+  UAT has soaked.
+- **B200 relaunch when capacity appears** (native NVFP4 + TP=1; carts are TP-agnostic by
+  design so nothing re-onboards).
+- **Research-bucket cleanup decision** (June cartridge-encoder/qasper/quality buckets + SGs —
+  possibly IP-relevant, operator review).
+- **AWS root-key rotation** (operator).
+
+**ML / research:**
+- **recall@k A/B: doc descriptions on vs off** (DOC_DESCRIPTIONS_ENABLED flag exists; one env
+  var per arm).
+- **Streamed per-layer-group encode** (the 70B-class onboarding encode lever filed in the
+  estimator notes; less urgent now that engine-side onboarding measured ~2.9s/doc).
+- **Head-to-head Command A+ benchmark** (IN FLIGHT: harness built, awaiting 2×H100/B200
+  capacity) → fills the estimator anchors + accuracy picture.
+
+---
+
 ## 8. Decisions log
 
 (newest first)
+
+- **2026-09-02 — Pricing simplified to TWO meters; onboarding is free.** Memory $0.03/doc/mo
+  (was $0.02) + inference $1.30/1k queries; the $0.10/doc onboarding meter is gone. Why: one-time
+  revenue becomes recurring (the +1¢/mo recovers onboarding cost in 1–2 months and passes the old
+  one-time fee at ~10 months — customers who stay pay more, churners pay less, and retention is
+  structural because onboarded docs ARE the switching cost); "free onboarding" removes the
+  biggest trial objection vs RAG vendors' ingestion fees; and the story compresses to one line —
+  pay for what your AI remembers and what you ask it. Guardrails paired with it (see Backlog):
+  fair-use terms for thrash/re-sync, platform fee as the floor, change detection as the real
+  re-onboarding fix. Payment provider decided: Stripe (metered Billing + Customer Portal + Tax;
+  internal usage tables stay the source of truth). Billing remains DISABLED for now.
 
 - **2026-09-02 — DECIDED + SHIPPED: onboarding goes THROUGH the vLLM engine (path A) — full smoke
   6/6 on the live box.** The connector gained its SAVE direction (wheel 0.5.0): a request flagged
