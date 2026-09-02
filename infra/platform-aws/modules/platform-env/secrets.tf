@@ -52,7 +52,16 @@ locals {
     GOOGLE_CLIENT_SECRET = var.google_client_secret
   } : {}
 
-  secret_values = merge(local.base_secret_values, local.google_secret_values)
+  # GPU control plane (platform-admin start/stop of the Lambda box). Only present
+  # when set — absence keeps the feature off (backend gates on LAMBDA_API_KEY).
+  # ZONE_ID rides the secrets map for one delivery path, though it's not sensitive.
+  gpu_secret_values = merge(
+    var.lambda_api_key != "" ? { LAMBDA_API_KEY = var.lambda_api_key } : {},
+    var.cloudflare_api_token != "" ? { CLOUDFLARE_API_TOKEN = var.cloudflare_api_token } : {},
+    var.cloudflare_zone_id != "" ? { CLOUDFLARE_ZONE_ID = var.cloudflare_zone_id } : {},
+  )
+
+  secret_values = merge(local.base_secret_values, local.google_secret_values, local.gpu_secret_values)
 }
 
 resource "aws_secretsmanager_secret" "app" {

@@ -281,6 +281,44 @@ export interface PlatformUsage {
   };
 }
 
+// --- GPU serving control (platform admin) ------------------------------------------------------
+// The serving box is a single Lambda Cloud instance. There's no pause: stop terminates it (GPU
+// billing -> $0/hr), start launches + auto-provisions a fresh one. Data survives across stop/start.
+export type GpuState =
+  | "offline"
+  | "booting"
+  | "provisioning"
+  | "warming"
+  | "serving"
+  | "terminating";
+
+export interface GpuInstance {
+  id: string;
+  name: string;
+  type: string;
+  region: string;
+  ip: string | null;
+  price_cents_per_hour: number | null;
+}
+
+// GET /platform-admin/gpu/status. enabled=false hides the whole panel.
+export interface GpuStatus {
+  enabled: boolean;
+  state: GpuState;
+  instance: GpuInstance | null;
+  serve_reachable: boolean;
+  engine_ready: boolean;
+  onboard_reachable: boolean;
+  dns_pointed: boolean | null;
+  hourly_usd: number | null;
+}
+
+// POST /platform-admin/gpu/start (202) and /stop (202) — the state the transition moves into.
+export interface GpuActionResponse {
+  instance_id?: string;
+  state: GpuState;
+}
+
 // A pending waitlist entry in GET /platform-admin/access-requests.
 export interface AccessRequest {
   id: string;

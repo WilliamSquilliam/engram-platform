@@ -4,7 +4,7 @@
 // recharts bar chart of est_cost per tenant from GET /platform-admin/usage), and Waitlist approvals
 // (pending access requests from GET /platform-admin/access-requests with Approve/Deny — approve
 // returns a one-time invite_link to copy). Everyone without platform_admin is bounced home.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Bar,
@@ -17,7 +17,14 @@ import {
   YAxis,
 } from "recharts";
 import { api, getToken } from "@/lib/api";
-import type { AccessRequest, PlatformUsage, Tenant, User } from "@/lib/types";
+import type {
+  AccessRequest,
+  GpuState,
+  GpuStatus,
+  PlatformUsage,
+  Tenant,
+  User,
+} from "@/lib/types";
 import { Card, CardBody, CardHeader, Button, Badge, cn } from "@/components/ui";
 
 const num = (x: number | null | undefined) =>
@@ -147,6 +154,9 @@ export default function PlatformAdminPage() {
           {error}
         </p>
       )}
+
+      {/* ---- GPU serving control (top: the fleet-wide switch that gates all chat/onboarding) --- */}
+      <GpuServingCard />
 
       {/* ---- Waitlist approvals (top: it's the actionable panel) ------------------------------- */}
       <Card>
@@ -329,6 +339,343 @@ export default function PlatformAdminPage() {
         </CardBody>
       </Card>
     </div>
+  );
+}
+
+// ---- GPU serving control ------------------------------------------------------------------------
+// The serving box is one Lambda Cloud instance. There is no pause: Stop terminates it (GPU billing
+// -> $0/hr) and Start launches a fresh one that auto-provisions (~10-20 min to serving). Data is
+// durable across stop/start (document bases, cartridges, model weights), so the confirm copy leads
+// with that. Self-contained: owns its own status fetch + adaptive polling, independent of the
+// page's tenant/usage/waitlist loads.
+
+// Human labels + pill color per state (never show the raw enum). Pulse only on the initial launch.
+const GPU_PILL: Record<GpuState, { label: string; color: string; pulse?: boolean }> = {
+  serving: { label: "Serving", color: "green" },
+  warming: { label: "Warming up", color: "amber" },
+  provisioning: { label: "Provisioning", color: "amber" },
+  booting: { label: "Starting", color: "amber", pulse: true },
+  terminating: { label: "Stopping", color: "red" },
+  offline: { label: "Offline", color: "slate" },
+};
+
+// One-sentence explanation of what the box is doing right now.
+const GPU_STATE_LINE: Record<GpuState, string> = {
+  serving: "Model loaded and answering queries.",
+  warming: "Loading model weights into GPU memory.",
+  provisioning: "Instance is up, installing the serving stack.",
+  booting: "Launching a fresh cloud instance.",
+  terminating: "Shutting the instance down. GPU billing stops when it is gone.",
+  offline: "GPU is stopped. Chat and onboarding are paused until you start it.",
+};
+
+// States that are actively transitioning — poll fast (10s) so the pill tracks progress.
+const GPU_TRANSITIONAL: GpuState[] = ["booting", "provisioning", "warming", "terminating"];
+
+function GpuServingCard() {
+  const [status, setStatus] = useState<GpuStatus | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  // Inline result of a start/stop action (409 already-running / 503 no-capacity detail messages).
+  const [actionError, setActionError] = useState("");
+  const [pending, setPending] = useState<"start" | "stop" | null>(null);
+  // Which confirm dialog is open (daisyUI modal), if any.
+  const [confirming, setConfirming] = useState<"start" | "stop" | null>(null);
+  // A just-fired request forces fast polling until the next status settles, even before `state`
+  // has flipped to a transitional value on the server.
+  const justActed = useRef(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const s = await api.gpuStatus();
+      setStatus(s);
+    } catch {
+      // A transient status blip shouldn't blow away the last known good state; keep showing it.
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Adaptive polling: 10s while transitioning or a request just fired, 60s when settled. Re-arm the
+  // timer whenever the state changes so the interval switches without a leaked timer.
+  const state = status?.state;
+  useEffect(() => {
+    const fast =
+      justActed.current || (!!state && GPU_TRANSITIONAL.includes(state));
+    const id = setInterval(refresh, fast ? 10_000 : 60_000);
+    return () => clearInterval(id);
+  }, [state, refresh, pending]);
+
+  async function doStart() {
+    setConfirming(null);
+    setPending("start");
+    setActionError("");
+    justActed.current = true;
+    try {
+      const res = await api.gpuStart();
+      // Optimistically reflect the transition the server reported so the pill flips immediately.
+      setStatus((s) => (s ? { ...s, state: res.state } : s));
+      await refresh();
+    } catch (e: any) {
+      setActionError(e.message || "Couldn't start the GPU.");
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function doStop() {
+    setConfirming(null);
+    setPending("stop");
+    setActionError("");
+    justActed.current = true;
+    try {
+      const res = await api.gpuStop();
+      setStatus((s) => (s ? { ...s, state: res.state } : s));
+      await refresh();
+    } catch (e: any) {
+      setActionError(e.message || "Couldn't stop the GPU.");
+    } finally {
+      setPending(null);
+    }
+  }
+
+  // Clear the just-acted flag once the box reaches a settled state (so polling relaxes to 60s).
+  useEffect(() => {
+    if (state === "serving" || state === "offline") justActed.current = false;
+  }, [state]);
+
+  if (!loaded) return null; // Nothing to show until the first status lands.
+  if (!status || !status.enabled) return null; // enabled=false -> render nothing at all.
+
+  const pill = GPU_PILL[status.state] ?? GPU_PILL.offline;
+  const inst = status.instance;
+  const isOffline = status.state === "offline";
+  // Stop is offered while the box is up or coming up; Start only when fully offline.
+  const canStop = ["serving", "warming", "provisioning", "booting"].includes(status.state);
+  const costLabel = isOffline
+    ? "$0.00/hr while stopped"
+    : status.hourly_usd != null
+      ? `$${status.hourly_usd.toFixed(2)}/hr`
+      : "—";
+
+  return (
+    <Card data-testid="gpu-card">
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <h2 className="font-medium">GPU Serving</h2>
+            <span
+              data-testid="gpu-pill"
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+                pill.color === "green" && "bg-emerald-500/15 text-emerald-300",
+                pill.color === "amber" && "bg-amber-500/15 text-amber-300",
+                pill.color === "red" && "bg-red-500/15 text-red-300",
+                pill.color === "slate" && "bg-slate-800 text-slate-300"
+              )}
+            >
+              {pill.pulse && (
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+              )}
+              {pill.label}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {isOffline && (
+              <Button
+                type="button"
+                data-testid="gpu-start"
+                disabled={pending !== null}
+                onClick={() => setConfirming("start")}
+              >
+                {pending === "start" ? (
+                  <span className="flex items-center gap-2">
+                    <Spinner /> Starting…
+                  </span>
+                ) : (
+                  "Start GPU"
+                )}
+              </Button>
+            )}
+            {canStop && (
+              <Button
+                type="button"
+                variant="danger"
+                data-testid="gpu-stop"
+                disabled={pending !== null}
+                onClick={() => setConfirming("stop")}
+              >
+                {pending === "stop" ? (
+                  <span className="flex items-center gap-2">
+                    <Spinner /> Stopping…
+                  </span>
+                ) : (
+                  "Stop GPU"
+                )}
+              </Button>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardBody className="space-y-3">
+        {/* Facts row — only meaningful when an instance exists. */}
+        {inst && (
+          <div
+            data-testid="gpu-facts"
+            className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-400"
+          >
+            <span>
+              Type <span className="text-slate-200">{inst.type}</span>
+            </span>
+            <span>
+              Region <span className="text-slate-200">{inst.region}</span>
+            </span>
+            <span>
+              IP <span className="text-slate-200">{inst.ip ?? "—"}</span>
+            </span>
+            <span>
+              Cost <span className="text-slate-200">{costLabel}</span>
+            </span>
+          </div>
+        )}
+        {/* When there's no instance, cost still reads $0.00/hr while stopped. */}
+        {!inst && (
+          <div className="text-xs text-slate-400">
+            Cost <span className="text-slate-200">{costLabel}</span>
+          </div>
+        )}
+
+        {/* One-sentence state explanation. */}
+        <p data-testid="gpu-state-line" className="text-sm text-slate-300">
+          {GPU_STATE_LINE[status.state]}
+        </p>
+
+        {/* Inline start/stop errors (409 already-running / 503 no-capacity), server detail verbatim. */}
+        {actionError && (
+          <div
+            data-testid="gpu-action-error"
+            role="alert"
+            className="rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-300"
+          >
+            {actionError}
+          </div>
+        )}
+      </CardBody>
+
+      {/* Start confirm. */}
+      <GpuConfirmDialog
+        open={confirming === "start"}
+        title="Start the GPU?"
+        confirmLabel="Start GPU"
+        onConfirm={doStart}
+        onCancel={() => setConfirming(null)}
+      >
+        <p>
+          Starting launches a fresh cloud instance that provisions itself. Chat and onboarding come
+          back in roughly 10 to 20 minutes once the model is loaded.
+        </p>
+        <p>GPU billing starts the moment the instance launches.</p>
+      </GpuConfirmDialog>
+
+      {/* Stop confirm — destructive, so the confirm button is btn-error. */}
+      <GpuConfirmDialog
+        open={confirming === "stop"}
+        title="Stop the GPU?"
+        confirmLabel="Stop GPU"
+        destructive
+        onConfirm={doStop}
+        onCancel={() => setConfirming(null)}
+      >
+        <p>Stopping ends GPU billing immediately and drops the hourly cost to $0.00.</p>
+        <p>
+          All data stays safe. Document bases, cartridges, and model weights live on durable
+          storage and survive the stop.
+        </p>
+        <p>
+          Chat and onboarding go offline until you start the GPU again, and anything running right
+          now will fail.
+        </p>
+      </GpuConfirmDialog>
+    </Card>
+  );
+}
+
+// Small inline spinner for buttons with a request in flight.
+function Spinner() {
+  return (
+    <span
+      aria-hidden
+      className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
+    />
+  );
+}
+
+// Confirm dialog on daisyUI's `modal` component (library CSS, not bespoke) — same data-theme="engram"
+// approach the Stepper uses so it picks up the brand palette. Driven by a native <dialog> so Escape
+// and the backdrop close it. The destructive action gets btn-error to stand out.
+function GpuConfirmDialog({
+  open,
+  title,
+  confirmLabel,
+  destructive,
+  onConfirm,
+  onCancel,
+  children,
+}: {
+  open: boolean;
+  title: string;
+  confirmLabel: string;
+  destructive?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+
+  // Keep the native dialog's open state in sync with `open` so backdrop/Escape and React agree.
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    if (!open && d.open) d.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={ref}
+      data-theme="engram"
+      className="modal"
+      data-testid="gpu-confirm"
+      onClose={onCancel}
+    >
+      <div className="modal-box border border-slate-800 bg-slate-900 text-slate-100">
+        <h3 className="text-lg font-semibold">{title}</h3>
+        <div className="mt-3 space-y-2 text-sm text-slate-300">{children}</div>
+        <div className="modal-action">
+          <Button type="button" variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant={destructive ? "danger" : "default"}
+            data-testid="gpu-confirm-action"
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </Button>
+        </div>
+      </div>
+      {/* Clicking the backdrop cancels. */}
+      <form method="dialog" className="modal-backdrop">
+        <button aria-label="Close" onClick={onCancel}>
+          close
+        </button>
+      </form>
+    </dialog>
   );
 }
 

@@ -300,6 +300,23 @@ reference platform.
   frontend surface rendered only for the superuser. Keep it isolated from the tenant app (own
   routes, own nav, heavy authz + audit).
 
+### E12 — GPU serving controls in the Platform Admin console  → **✅ built (2026-09-02)**
+- **What:** start / stop / live status of the Lambda GPU serving box, from the Platform Admin tab.
+  Lambda has no pause state, so Stop = terminate (compute drops to $0/hr; document bases, carts
+  (S3), and model weights (persistent FS) all survive) and Start = launch a fresh box that
+  **provisions itself unattended**: cloud-init `user_data` runs `self-provision.sh` off the
+  persistent FS (provision.sh publishes the bundle there), so the control plane never SSHes.
+- **Backend:** `lambda_cloud.py` (httpx client over the official REST API), `cloudflare_dns.py`
+  (A-record upsert with drift check), `routers/gpu_admin.py` (`/platform-admin/gpu/status|start|stop`,
+  all `require_platform_admin`). Status derives offline→booting→provisioning→warming→serving from
+  the Lambda instance + the two health probes, and best-effort re-points the gpu/gpu-onboard DNS
+  records at the new IP on every poll. Start ensures the 22/80/443 firewall, then picks type+region
+  by discovery: `b200` preferred, `2x_h100_sxm` fallback, intersected with regions hosting
+  `engram-fs`. Secrets (LAMBDA_API_KEY, CLOUDFLARE_*) ride the per-env Secrets Manager map; empty =
+  panel hidden.
+- **Frontend:** "GPU Serving" card atop the Platform Admin console — status pill, type/region/IP,
+  $/hr, Start/Stop with honest confirm dialogs, adaptive 10s/60s polling.
+
 ---
 
 ## 5. Reuse-vs-build summary
@@ -363,6 +380,36 @@ MCP is one stdio tool; cross-tenant slug sharing; the S3 recycle-bin CFN is miss
 
 (newest first)
 
+- **2026-09-02 — E12 shipped: GPU start/stop/status from the Platform Admin tab, with unattended
+  relaunch.** Backend wraps the official Lambda REST API (`lambda_cloud.py` + `cloudflare_dns.py` +
+  `/platform-admin/gpu/*`); Stop = terminate ($0/hr, all durable tiers survive), Start = launch with
+  a cloud-init `user_data` that runs `self-provision.sh` off the persistent FS (published by
+  provision.sh), so a fresh box provisions itself — the control plane never SSHes. Launch-day
+  hardening folded into the same pass: **(a)** Lambda's default account firewall is 22-only — a fully
+  provisioned box was silently unreachable on 80/443; `MANAGE_FIREWALL` now defaults ON and the
+  backend Start ensures the rules. **(b)** `systemctl reload caddy` on first provision silently kept
+  serving the apt-default :80 config (no TLS ever issued); bootstrap now restarts + verifies :443.
+  **(c)** the engram-cartridge `torch<2.12` ceiling downgraded torch under vLLM 0.28 (torchvision ABI
+  crash at the service's lazy import, missed by the old `import vllm` check) — wheel 0.4.2 drops the
+  ceiling, bootstrap installs vLLM LAST and the stack check now exercises the lazy path.
+  **(d)** `VLLM_WORKER_MULTIPROC_METHOD=spawn` for TP>1; `VLLM_TP` autodetected from GPU count so one
+  bundle serves the 1×B200 and 2×H100 shapes. **(e)** seed-out restarts use `--no-block` (a oneshot
+  that waits for engine_ready was blocking provisioning's SSH session). Also fixed: the uat/prod env
+  roots never declared `cartridge_store_bucket_override`, so the tfvars value was silently ignored
+  (Terraform drops undeclared vars) — now passed through. First `gpu_2x_h100_sxm5` box drew a bad
+  host (GPU fabric registration stuck "In Progress" → CUDA Error 802, links themselves healthy,
+  survived reboot) — terminated and relaunched, which is exactly the recycle flow the scripts + the
+  new Start button automate.
+- **2026-09-02 — Lambda pivot applied: UAT is LIVE at uat-app.engramdynamics.org.** The $7,500
+  Lambda credits pivot executed end-to-end this session: `serving-lambda/aws-support` applied (cart
+  bucket + bucket-scoped IAM key), `platform-aws/common` + `envs/uat` applied, images `56996e5`
+  deployed, login verified with the seeded operator admin (password in Secrets Manager
+  `uat-engram/BOOTSTRAP_ADMIN_PASSWORD`). UAT points at the Lambda serving unit via overrides
+  (`read_serving_state=false`): gpu.engramdynamics.org (serve :8002) / gpu-onboard.engramdynamics.org
+  (onboard :8001), Caddy auto-HTTPS fronting 127.0.0.1-bound services, Cloudflare A records
+  auto-upserted by launch.sh. Serving = Command A+ W4A4 (`best` tier, 131072 ctx) on `2x_h100_sxm5`
+  (B200 preferred when capacity appears). Three-tier storage: ephemeral SSD (hot) / persistent
+  `engram-fs` (weights seed, survives terminate) / S3 (durable carts). Prod env not yet applied.
 - **2026-09-02 — E8 built: two-env platform Terraform (`infra/platform-aws/`).** Four stacks
   (common → uat → prod + the shared module), all validate clean, nothing applied: one public ALB +
   ACM cert (Cloudflare records output for manual add), per-env Fargate services / RDS / S3 /

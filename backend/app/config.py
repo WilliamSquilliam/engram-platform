@@ -66,6 +66,35 @@ RETRIEVAL_DENSE_MODEL = os.environ.get("RETRIEVAL_DENSE_MODEL", "BAAI/bge-small-
 # process restarts instead of re-downloaded (one dir shared by every worker on the box).
 FASTEMBED_CACHE_DIR = Path(os.environ.get("FASTEMBED_CACHE_DIR", DATA_DIR / "fastembed"))
 
+# --- Platform-admin GPU controls: Lambda Cloud serving box (E12) ------------------------------
+# The GPU serving box is a Lambda Cloud instance. Lambda has NO stop state: "stop" == terminate
+# (billing $0), "start" == launch a fresh box. A persistent filesystem (LAMBDA_FS_NAME) holds the
+# model weights + the self-provision bundle, and a cloud-init user_data script provisions the fresh
+# box unattended, so terminate/relaunch is the intended flow. GPU_CONTROL_ENABLED gates the whole
+# feature: with no LAMBDA_API_KEY the controls report offline (still 200) and start/stop 503.
+LAMBDA_API_KEY = os.environ.get("LAMBDA_API_KEY", "")
+LAMBDA_API_BASE = os.environ.get("LAMBDA_API_BASE", "https://cloud.lambda.ai/api/v1")
+LAMBDA_INSTANCE_NAME = os.environ.get("LAMBDA_INSTANCE_NAME", "engram-serving")
+LAMBDA_FS_NAME = os.environ.get("LAMBDA_FS_NAME", "engram-fs")
+# Preferred instance-type name substring (e.g. "b200"); LAMBDA_TYPE_FALLBACK is the exact type name
+# used when nothing matches the filter. The launch region must ALSO host LAMBDA_FS_NAME (the weights +
+# self-provision bundle live there — launching elsewhere gives an unprovisioned box).
+LAMBDA_TYPE_FILTER = os.environ.get("LAMBDA_TYPE_FILTER", "b200")
+LAMBDA_TYPE_FALLBACK = os.environ.get("LAMBDA_TYPE_FALLBACK", "2x_h100_sxm")
+LAMBDA_SSH_KEY_NAME = os.environ.get("LAMBDA_SSH_KEY_NAME", "engram-lambda")
+
+# Cloudflare DNS: point the serve/onboard hostnames at the fresh box's IP after a launch. Best-effort
+# and optional — with no token/zone the status read reports dns_pointed=null and skips reconcile.
+# Accept the legacy CLOUDFLARE_API_KEY name as a fallback so an existing env doesn't need renaming.
+CLOUDFLARE_API_TOKEN = os.environ.get(
+    "CLOUDFLARE_API_TOKEN", os.environ.get("CLOUDFLARE_API_KEY", "")
+)
+CLOUDFLARE_ZONE_ID = os.environ.get("CLOUDFLARE_ZONE_ID", "")
+
+# Master switch for the GPU controls, derived from whether an API key is configured.
+GPU_CONTROL_ENABLED = bool(LAMBDA_API_KEY)
+
+
 # --- LLM document descriptions at onboarding (Feature 1) --------------------------------------
 # DESCRIBE_MAX_TOKENS caps each one-sentence description generation. The DEFAULT-ON flag
 # DOC_DESCRIPTIONS_ENABLED needs _flag() (defined below), so it's set further down. The per-doc time

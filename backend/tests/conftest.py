@@ -19,6 +19,13 @@ os.environ["GOOGLE_CLIENT_SECRET"] = ""
 # Hermetic email: a developer's .env may set EMAIL_BACKEND=ses; tests assume the
 # link-in-response (none) behavior and must never attempt real sends.
 os.environ["EMAIL_BACKEND"] = "none"
+# GPU controls default OFF in tests: a developer's repo-root .env may set real LAMBDA_API_KEY /
+# CLOUDFLARE_* creds; pin them empty so the suite never touches Lambda Cloud or Cloudflare and
+# GPU_CONTROL_ENABLED starts false (the gpu_admin tests set these per-test via monkeypatch).
+os.environ["LAMBDA_API_KEY"] = ""
+os.environ["CLOUDFLARE_API_TOKEN"] = ""
+os.environ["CLOUDFLARE_API_KEY"] = ""
+os.environ["CLOUDFLARE_ZONE_ID"] = ""
 # The suite makes many register/login calls from one client IP — turn off the
 # auth rate limiter so it doesn't trip mid-suite.
 os.environ["RATELIMIT_ENABLED"] = "false"

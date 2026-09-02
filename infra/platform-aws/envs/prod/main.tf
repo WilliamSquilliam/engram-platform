@@ -50,9 +50,15 @@ module "env" {
   # first apply) + per-value overrides (empty = use the state's outputs)
   read_serving_state = var.read_serving_state
   # serving-unit overrides
-  ml_service_url_override        = var.ml_service_url_override
-  inference_service_url_override = var.inference_service_url_override
-  ml_auth_token_override         = var.ml_auth_token_override
-  model_registry_json_override   = var.model_registry_json_override
-  tfstate_bucket                 = var.tfstate_bucket
+  ml_service_url_override         = var.ml_service_url_override
+  inference_service_url_override  = var.inference_service_url_override
+  ml_auth_token_override          = var.ml_auth_token_override
+  model_registry_json_override    = var.model_registry_json_override
+  cartridge_store_bucket_override = var.cartridge_store_bucket_override
+  tfstate_bucket                  = var.tfstate_bucket
+
+  # GPU control plane (platform-admin start/stop of the Lambda serving box)
+  lambda_api_key       = var.lambda_api_key
+  cloudflare_api_token = var.cloudflare_api_token
+  cloudflare_zone_id   = var.cloudflare_zone_id
 }

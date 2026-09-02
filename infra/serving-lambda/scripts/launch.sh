@@ -132,12 +132,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. (optional) Firewall. Rulesets are ACCOUNT-GLOBAL on Lambda, so changing them
-# affects every instance — gate behind MANAGE_FIREWALL=1. We allow only 22/80/443
-# (SSH + Caddy's HTTP-01 + HTTPS); the serving ports 8001/8002 bind to 127.0.0.1
-# so they are never exposed regardless.
+# 4. Firewall — DEFAULT ON. Lambda's account default allows only 22+ICMP, which
+# left a fully-provisioned box unreachable on 80/443 (Caddy couldn't even pass
+# HTTP-01). Rulesets are ACCOUNT-GLOBAL on Lambda so this affects every instance
+# in the account — set MANAGE_FIREWALL=0 only if other boxes need other ports.
+# We allow 22/80/443 (SSH + Caddy's HTTP-01 + HTTPS); the serving ports 8001/8002
+# bind to 127.0.0.1 so they are never exposed regardless.
 # ---------------------------------------------------------------------------
-if [ "${MANAGE_FIREWALL:-0}" = "1" ]; then
+if [ "${MANAGE_FIREWALL:-1}" = "1" ]; then
   log "MANAGE_FIREWALL=1 — setting account firewall to 22/80/443 inbound only (GLOBAL)"
   FW_BODY="$(python3 -c '
 import json
@@ -145,7 +147,8 @@ rule = lambda proto,port,desc: {"protocol":proto,"port_range":[port,port],
                                  "source_network":"0.0.0.0/0","description":desc}
 print(json.dumps({"data":[rule("tcp",22,"ssh"),
                           rule("tcp",80,"http-01 + redirect"),
-                          rule("tcp",443,"https (Caddy)")]}))')"
+                          rule("tcp",443,"https (Caddy)"),
+                          {"protocol":"icmp","source_network":"0.0.0.0/0","description":"ping"}]}))')"
   lambda_api PUT /firewall-rules "$FW_BODY" >/dev/null || log "  WARN firewall PUT failed (continuing; set rules in the console)"
 else
   log "skipping firewall (set MANAGE_FIREWALL=1 to enforce 22/80/443-only — it is account-GLOBAL)"

@@ -10,6 +10,8 @@ import type {
   ConnectorsResponse,
   Corpus,
   Document,
+  GpuActionResponse,
+  GpuStatus,
   Invite,
   Job,
   Member,
@@ -203,6 +205,15 @@ export const api = {
   // Deny a waitlist entry (no invite issued).
   denyAccessRequest: (id: string) =>
     req<{ status: string }>(`/platform-admin/access-requests/${id}/deny`, { method: "POST" }),
+
+  // --- GPU serving control (platform admin) -----------------------------------------------------
+  // Status of the single serving box. enabled=false -> the panel renders nothing.
+  gpuStatus: () => req<GpuStatus>("/platform-admin/gpu/status"),
+  // Launch a fresh instance (202). 409 = already running, 503 = no capacity right now; both carry
+  // a server `detail` message that req() surfaces as the thrown Error's message for inline display.
+  gpuStart: () => req<GpuActionResponse>("/platform-admin/gpu/start", { method: "POST" }),
+  // Terminate the running instance (202). 409 = nothing running.
+  gpuStop: () => req<GpuActionResponse>("/platform-admin/gpu/stop", { method: "POST" }),
 
   listCorpora: () => req<Corpus[]>("/corpora"),
   createCorpus: (name: string) =>

@@ -58,6 +58,18 @@ FS_ROOT="/lambda/nfs/$FS_NAME"            # Lambda mounts persistent filesystems
 HOST_SERVE="${CADDY_HOST_SERVE:-gpu.engramdynamics.org}"
 HOST_ONBOARD="${CADDY_HOST_ONBOARD:-gpu-onboard.engramdynamics.org}"
 
+# TP must equal the GPU count on THIS box. The B200(TP=1) vs 2x H100(TP=2) choice
+# happens at LAUNCH time by capacity, and the unattended relaunch path (platform
+# admin Start button) reuses one bundle for either shape — so the bundled VLLM_TP
+# is only a fallback. Autodetect and pin it in the installed env file.
+NGPU="$(nvidia-smi --list-gpus 2>/dev/null | grep -c GPU || true)"
+if [ "${NGPU:-0}" -ge 1 ]; then
+  sed -i "s/^VLLM_TP=.*/VLLM_TP=$NGPU/" "$ENV_FILE"
+  log "VLLM_TP pinned to detected GPU count: $NGPU"
+else
+  log "WARN: could not detect GPU count (nvidia-smi) — keeping bundled VLLM_TP"
+fi
+
 mkdir -p "$APP_DIR"
 rm -rf "$APP_DIR/ml_service"
 cp -r "$BUNDLE_DIR/ml_service" "$APP_DIR/ml_service"
@@ -96,14 +108,12 @@ fi
 source "$VENV/bin/activate"
 pip install -U pip wheel >/dev/null
 
-# --- vLLM. Blackwell (B200, SM100) needs recent CUDA wheels, so we install the
-# LATEST vllm (>=0.26) rather than pinning an older one: the pinned 0.26.0 in the
-# AWS unit predates broad Blackwell wheel support. ASSUMPTION: the latest vllm on
-# PyPI ships CUDA 12.4+/SM100 wheels compatible with Lambda Stack's driver; if a
-# fresh Blackwell build regresses, pin a known-good version here.
-log "installing latest vllm (>=0.26; Blackwell/SM100 needs recent CUDA wheels — see comment)"
-pip install "vllm>=0.26"
-
+# INSTALL ORDER MATTERS: wheel + app requirements FIRST, vllm LAST. vllm pins its
+# exact torch (and matching torchvision/pydantic floors); anything installed after
+# it can silently downgrade those and leave an ABI-mismatched stack that only
+# explodes at import time inside the service (torchvision::nms does not exist —
+# this happened: engram-cartridge's torch<2.12 pin dragged torch under vllm 0.28's
+# torch==2.13). Installing vllm last makes its resolver the final word.
 log "installing the engram-cartridge wheel with [s3,build] extras"
 pip install "engram-cartridge[s3,build] @ file://$WHEEL"
 
@@ -114,8 +124,26 @@ grep -v -iE '^\s*engram-cartridge' "$REQ" > "$FILTERED" || true
 pip install -r "$FILTERED"
 rm -f "$FILTERED"
 
-# Fail loud on the box (not at first query) if the stack doesn't import.
-python -c "import vllm, transformers, cartridges, fastapi, uvicorn; print('[bootstrap-lambda] stack ok — vllm', vllm.__version__, 'transformers', transformers.__version__)"
+# --- vLLM LAST (see order note above). Blackwell (B200, SM100) needs recent CUDA
+# wheels, so we install the LATEST vllm (>=0.26) rather than pinning an older one.
+# ASSUMPTION: the latest vllm on PyPI ships CUDA wheels compatible with Lambda
+# Stack's driver; if a fresh Blackwell build regresses, pin a known-good version.
+# -U so an already-satisfied vllm still gets its dep pins re-enforced on re-runs.
+log "installing latest vllm (>=0.26, LAST so its torch/pydantic pins win)"
+pip install -U "vllm>=0.26"
+
+# Fail loud on the box (not at first query) if the stack doesn't import. Must hit
+# the LAZY import paths the services actually hit: plain `import vllm` passed while
+# vllm.transformers_utils.config (-> transformers -> torchvision) was broken.
+python - <<'CHECK'
+import torch, torchvision, torchaudio, fastapi, pydantic, uvicorn
+import vllm, transformers
+from vllm.transformers_utils import config as _lazy_path  # crashes on torch/torchvision ABI mismatch
+import cartridges
+print("[bootstrap-lambda] stack ok — vllm", vllm.__version__, "torch", torch.__version__,
+      "torchvision", torchvision.__version__, "transformers", transformers.__version__,
+      "pydantic", pydantic.VERSION)
+CHECK
 deactivate
 chown -R "$RUN_USER":"$RUN_USER" "$APP_DIR"
 
@@ -292,8 +320,16 @@ systemctl daemon-reload
 systemctl enable engram-seed-in.service engram-onboard.service engram-serve.service engram-seed-out.service >/dev/null 2>&1 || true
 systemctl restart engram-seed-in.service
 systemctl restart engram-onboard.service engram-serve.service
-systemctl restart engram-seed-out.service || true   # oneshot; waits for engine_ready in the background
-systemctl reload caddy 2>/dev/null || systemctl restart caddy
+# --no-block is REQUIRED: seed-out is a oneshot whose ExecStart waits (up to 60
+# min) for engine_ready before rsyncing weights up — a plain restart blocks this
+# whole script (and the provision.sh SSH session driving it) until the engine warms.
+systemctl restart --no-block engram-seed-out.service || true
+# RESTART caddy, never reload: on first provision caddy is already running with the
+# apt-default :80 config, and `systemctl reload` silently kept serving it (no TLS,
+# nothing on 443). Restart always loads /etc/caddy/Caddyfile. Then verify 443.
+systemctl restart caddy
+sleep 3
+ss -tln | grep -q ':443 ' || die "caddy is not listening on 443 after restart — check journalctl -u caddy"
 
 log "done. Services bound to 127.0.0.1; Caddy fronts them with HTTPS."
 log "  onboard: https://$HOST_ONBOARD/health   (local: curl 127.0.0.1:8001/health)"

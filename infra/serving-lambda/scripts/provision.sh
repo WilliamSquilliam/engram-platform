@@ -132,12 +132,33 @@ ENV
 umask 022
 
 # ---------------------------------------------------------------------------
-# 4. Bundle: wheel + ml_service/ + bootstrap-lambda.sh + serving.env.
+# 4. Bundle: wheel + ml_service/ + bootstrap-lambda.sh + serving.env +
+# self-provision.sh. self-provision.sh is the UNATTENDED entry point: the
+# platform-admin Start button launches a fresh box with a cloud-init user_data
+# that runs it off the persistent FS (step 6 publishes it there) — one
+# provisioning path whether an operator SSHes or the backend presses the button.
 # ---------------------------------------------------------------------------
 tar -C "$REPO_ROOT" --exclude='__pycache__' --exclude='*.pyc' -cf - ml_service \
   | tar -C "$STAGE" -xf -
 cp "$LIB_DIR/bootstrap-lambda.sh" "$STAGE/bootstrap-lambda.sh"
 chmod +x "$STAGE/bootstrap-lambda.sh"
+
+cat > "$STAGE/self-provision.sh" <<'SELFPROV'
+#!/usr/bin/env bash
+# Runs as root ON a fresh Lambda box at first boot (cloud-init user_data from the
+# platform-admin Start button). The persistent FS carries this script + the
+# provision bundle; unpack to the same path provision.sh uses and run the same
+# bootstrap — no operator SSH involved. Idempotent.
+set -euo pipefail
+FS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # /lambda/nfs/<fs>/engram
+BUNDLE="$FS_DIR/bundle.tgz"
+[ -f "$BUNDLE" ] || { echo "[self-provision] no bundle at $BUNDLE — run provision.sh once from the operator machine"; exit 1; }
+mkdir -p /tmp/engram-bootstrap
+tar -C /tmp/engram-bootstrap -xzf "$BUNDLE"
+chmod +x /tmp/engram-bootstrap/bootstrap-lambda.sh
+bash /tmp/engram-bootstrap/bootstrap-lambda.sh
+SELFPROV
+chmod +x "$STAGE/self-provision.sh"
 BUNDLE="$BUILD_TMP/lambda-bundle.tgz"
 tar -C "$STAGE" -czf "$BUNDLE" .
 log "bundle: $(du -h "$BUNDLE" | cut -f1)"
@@ -166,6 +187,22 @@ ssh "${SSH_OPTS[@]}" -tt "$SSH_USER@$IP" '
   chmod +x bootstrap-lambda.sh
   sudo bash bootstrap-lambda.sh
 '
+
+# ---------------------------------------------------------------------------
+# 6. Publish the self-provision assets to the persistent FS so the backend's
+# Start button can relaunch UNATTENDED (cloud-init runs self-provision.sh off
+# the FS; no operator SSH). The bundle holds serving.env (ML_AUTH_TOKEN + the
+# bucket-scoped AWS key) — same trust domain as the box itself; the FS is
+# account-private. Re-running provision refreshes the published copy.
+# ---------------------------------------------------------------------------
+log "publishing self-provision assets to the persistent FS (/lambda/nfs/$FS_NAME/engram)"
+ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "
+  set -e
+  sudo mkdir -p /lambda/nfs/$FS_NAME/engram
+  sudo cp /tmp/engram-bootstrap/bundle.tgz /tmp/engram-bootstrap/self-provision.sh /lambda/nfs/$FS_NAME/engram/
+  sudo chmod 700 /lambda/nfs/$FS_NAME/engram
+  sudo chmod +x /lambda/nfs/$FS_NAME/engram/self-provision.sh
+"
 
 echo
 log "==================== PROVISIONED ===================="

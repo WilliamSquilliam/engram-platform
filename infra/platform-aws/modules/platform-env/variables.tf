@@ -206,3 +206,26 @@ variable "read_serving_state" {
   type        = bool
   default     = true
 }
+
+# --- GPU control plane (platform-admin start/stop of the Lambda serving box) ---
+# All optional: empty leaves the GPU panel hidden (backend GPU_CONTROL_ENABLED is
+# driven by LAMBDA_API_KEY presence). Injected as task secrets, never plain env.
+variable "lambda_api_key" {
+  description = "Lambda Cloud API key — lets platform-admin start/stop/status the GPU box. Empty = feature off."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token (zone DNS edit) — backend re-points the gpu/gpu-onboard A records after an unattended relaunch. Empty = no DNS reconcile."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone id for engramdynamics.org (pairs with cloudflare_api_token)."
+  type        = string
+  default     = ""
+}

@@ -224,6 +224,42 @@ class PlatformUsageResp(BaseModel):
     totals: PlatformUsageTotalsResp = PlatformUsageTotalsResp()
 
 
+# --- E12 platform-admin GPU controls: Lambda Cloud serving box --------------
+
+class GpuInstanceResp(BaseModel):
+    """The one running LAMBDA_INSTANCE_NAME box (null in GpuStatusResp when offline)."""
+    id: str
+    name: str
+    type: str
+    region: str
+    ip: str | None = None
+    price_cents_per_hour: int | None = None
+
+
+class GpuStatusResp(BaseModel):
+    """GET /platform-admin/gpu/status — the box's derived lifecycle state + health probes. `enabled`
+    is false / `state` "offline" / `instance` null when LAMBDA_API_KEY is unset (still a 200)."""
+    enabled: bool
+    # offline | booting | provisioning | warming | serving | terminating
+    state: str
+    instance: GpuInstanceResp | None = None
+    serve_reachable: bool = False
+    engine_ready: bool = False
+    onboard_reachable: bool = False
+    # null when Cloudflare creds are absent or the host isn't a DNS name (localhost / IP literal).
+    dns_pointed: bool | None = None
+    hourly_usd: float | None = None
+
+
+class GpuStartResp(BaseModel):
+    instance_id: str
+    state: str = "booting"
+
+
+class GpuStopResp(BaseModel):
+    state: str = "terminating"
+
+
 class CorpusCreateReq(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     source_type: str = "upload"

@@ -73,8 +73,35 @@ variable "model_registry_json_override" {
   default = ""
 }
 
+variable "cartridge_store_bucket_override" {
+  description = "Pass-through: CARTRIDGE_STORE_BUCKET override (the Lambda-unit cart bucket)."
+  type        = string
+  default     = ""
+}
+
 variable "read_serving_state" {
   description = "Pass-through: read serving-aws remote state (false until that stack's first apply)."
   type        = bool
   default     = true
+}
+
+# --- GPU control plane (platform-admin start/stop of the Lambda serving box) ---
+variable "lambda_api_key" {
+  description = "Pass-through: Lambda Cloud API key (empty = GPU panel off)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "cloudflare_api_token" {
+  description = "Pass-through: Cloudflare DNS-edit token for gpu/gpu-onboard A-record reconcile."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Pass-through: Cloudflare zone id for engramdynamics.org."
+  type        = string
+  default     = ""
 }
