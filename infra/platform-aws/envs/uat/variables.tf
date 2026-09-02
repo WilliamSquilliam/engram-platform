@@ -74,3 +74,9 @@ variable "model_registry_json_override" {
   type    = string
   default = ""
 }
+
+variable "read_serving_state" {
+  description = "Pass-through: read serving-aws remote state (false until that stack's first apply)."
+  type        = bool
+  default     = true
+}

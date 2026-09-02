@@ -59,6 +59,22 @@ resource "aws_iam_role_policy" "ecs_task_storage" {
   })
 }
 
+# Transactional email (invites / password resets / approvals) goes out via SES
+# directly from the app (EMAIL_BACKEND=ses); without this the sends fail silently
+# and the flows fall back to on-screen links.
+resource "aws_iam_role_policy" "ecs_task_ses" {
+  name = "ses-send"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ses:SendEmail", "ses:SendRawEmail"]
+      Resource = "*"
+    }]
+  })
+}
+
 # Read the shared cart store (only created when the serving state exposes a bucket).
 # The control plane hydrates its retrieval index from carts the GPU box wrote there.
 resource "aws_iam_role_policy" "ecs_task_cartstore" {

@@ -1,0 +1,23 @@
+# Local secrets + runtime state for the Lambda serving unit — NEVER commit.
+# The SSH keypair that reaches the box, the current instance id/ip, and the
+# generated ML_AUTH_TOKEN all live here.
+.keys/
+.state/
+
+# Terraform working files (aws-support/). State lives in the remote S3 backend
+# (versions.tf) — it holds the IAM secret key, so it must never be committed.
+# The .terraform.lock.hcl IS committed (pinned provider hashes).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Local var overrides may carry secrets; keep them out of git.
+*.tfvars
+!example.tfvars
+
+# Build scratch (wheel builds, bundles) if any lands here.
+*.whl
+*.tgz

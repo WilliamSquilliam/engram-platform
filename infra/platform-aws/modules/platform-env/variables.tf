@@ -200,3 +200,9 @@ variable "cartridge_store_bucket_override" {
   type        = string
   default     = ""
 }
+
+variable "read_serving_state" {
+  description = "Read the serving unit's remote state for the ML-plane values. Set false when serving-aws has never been applied (its state object doesn't exist yet) and supply the *_override vars; flip back to true after its first apply."
+  type        = bool
+  default     = true
+}

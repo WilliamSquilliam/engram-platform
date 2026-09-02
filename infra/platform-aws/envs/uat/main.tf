@@ -45,7 +45,10 @@ module "env" {
   google_client_id      = var.google_client_id
   google_client_secret  = var.google_client_secret
 
-  # serving-unit overrides (empty = read serving-aws remote state)
+  # serving-unit wiring: gate the remote-state read (false until serving-aws's
+  # first apply) + per-value overrides (empty = use the state's outputs)
+  read_serving_state = var.read_serving_state
+  # serving-unit overrides
   ml_service_url_override        = var.ml_service_url_override
   inference_service_url_override = var.inference_service_url_override
   ml_auth_token_override         = var.ml_auth_token_override

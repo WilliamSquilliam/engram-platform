@@ -12,6 +12,9 @@ terraform {
   required_version = ">= 1.7.0"
 
   backend "s3" {
+    # Backend creds resolve separately from the provider: pin the profile here
+    # too or terraform falls back to the default chain (IMDS) and fails locally.
+    profile        = "Engram-Dynamics"
     bucket         = "cartridge-tfstate-808379776072-us-east-1"
     key            = "serving-aws/terraform.tfstate"
     region         = "us-east-1"
