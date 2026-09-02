@@ -1,0 +1,167 @@
+[
+  {
+    "doc_id": "1601_00901",
+    "q": "What dataset was used to evaluate the joint ontology and semantic parser approach?",
+    "expect_substring": "Wikipedia",
+    "cart_answer": "<|START_TEXT|>The joint ontology and semantic parser approach was evaluated on the first sentences of Wikipedia pages describing people. According to the document, these sentences are already annotated with links to other pages, which are also instances of the DBpedia knowledge base. The approach uses these annotations to learn the ontology and semantic parser.<|END_THINKING|><|START_TEXT|>The approach was evaluated on the first sentences of Wikipedia pages describing people. These sentences are already annotated with links to other pages, which are also instances of the DBpedia knowledge base.<|END_TEXT|>",
+    "rag_answer": "The question asks: \"What dataset was used to evaluate the joint ontology and semantic parser approach?\" We need to find the answer in the provided documents. The document is titled \"Joint learning of ontology and semantic parser from text\". The relevant part is in the introduction: \"For experimentation, first sentences of Wikipedia pages describing people are taken as a dataset.\" Also earlier: \"Our approach was evaluated on the first sentences of Wikipedia pages describing people.\" So the dataset used is the first sentences of Wikipedia pages describing people. We should answer concisely, referencing the document title.<|END_THINKING|><|START_TEXT|>According to \"Joint learning of ontology and semantic parser from text,\"",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_00901",
+    "q": "What type of grammar is induced from the semantically annotated text in the joint ontology learning approach?",
+    "expect_substring": "context-free",
+    "cart_answer": "<|START_TEXT|>The joint ontology learning approach induces a context-free grammar (CFG) from semantically annotated text. This grammar is built iteratively through a semi-automatic bootstrapping procedure that generalizes from unparsable parts of sentences (null nodes) to create new production rules. The CFG is used to parse text into semantic trees, which then serve as input for ontology induction.<|END_TEXT|>",
+    "rag_answer": "The question asks: \"What type of grammar is induced from the semantically annotated text in the joint ontology learning approach?\" We need to find the answer in the provided document. The document is titled \"Joint learning of ontology and semantic parser from text\". We need to locate the part that describes the grammar induction. In the \"Grammar induction\" section, it says: \"A context-free grammar (CFG) is induced from the text, which is represented by several layers of semantic annotations.\" So the answer is: a context-free grammar (CFG). The question is straightforward, and we can answer concisely. According to the document, the grammar induced",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_00901",
+    "q": "Which knowledge base provides the relations used as the training set for relation prediction in the ontology learning paper?",
+    "expect_substring": "DBpedia",
+    "cart_answer": "<|START_TEXT|>The relations used as the training set for relation prediction in the ontology learning paper come from DBpedia. The paper mentions that the first sentences of Wikipedia pages describing people are annotated with links to other pages, which are also instances of DBpedia knowledge base, and relations from DBpedia are used as a training set.<|END_THINKING|><|START_TEXT|>The relations used as the training set for relation prediction come from DBpedia. The paper states that Wikipedia sentences are annotated with links to DBpedia instances, and DBpedia relations are used to train the relation prediction models.<|END_TEXT|>",
+    "rag_answer": "The question asks: \"Which knowledge base provides the relations used as the training set for relation prediction in the ontology learning paper?\" We need to find the answer in the provided documents. The document is titled \"Joint learning of ontology and semantic parser from text\". The question is about the ontology learning paper, which is this document. We need to find the part that mentions the knowledge base that provides the relations used as the training set for relation prediction.\n\nLooking through the document, I see a paragraph that says: \"For experimentation, first sentences of Wikipedia pages describing people are taken as a dataset. These sentences are already annotated with links to other",
+    "cart_ok": true,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What are the two jointly trained components of the dynamic neural module network?",
+    "expect_substring": "layout",
+    "cart_answer": "<|START_TEXT|>According to \"Dynamic Neural Module Networks for Question Answering\", the two jointly trained components are a layout model that selects a network structure for each question and an execution model that applies the assembled network to the world representation to produce answers.<|END_TEXT|>",
+    "rag_answer": "The question asks about the two jointly trained components of the dynamic neural module network. I need to find this information in the provided document.\n\nLooking through the document, I can see in the \"Introduction\" section:\n\n\"Our model has two components, trained jointly: first, a collection of neural “modules” that can be freely composed (fig:teasera); second, a network layout predictor that assembles modules into complete deep networks tailored to each question (fig:teaserb).\"\n\nThis directly answers the question. The two components are:\n1. A collection of neural modules that can be freely composed\n2. A network layout predictor that",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What form of supervision does the dynamic neural module network require for training?",
+    "expect_substring": "triples",
+    "cart_answer": "<|START_TEXT|>According to \"Dynamic Neural Module Networks for Question Answering\", the dynamic neural module network requires only (world, question, answer) triples as supervision. It does not require annotated logical forms or layout supervision. The model learns both the parameters for the modules and the network layout jointly from these triples.<|END_THINKING|><|START_TEXT|>The dynamic neural module network is trained using only (world, question, answer) triples as supervision. It does not require annotated logical forms or explicit layout supervision; instead, it jointly learns both the module parameters and the network layout from these triples.<|END_TEXT|>",
+    "rag_answer": "The question asks about the form of supervision required for training the dynamic neural module network. I need to find this information in the provided document.\n\nLooking through the document, I can see several relevant sections:\n\n1. In the introduction: \"Training data consists of (world, question, answer) triples: our approach requires no supervision of network layouts.\"\n\n2. Later in the introduction: \"Our approach, which we term a dynamic neural model network, achieves state-of-the-art results on benchmark datasets in both visual and structured domains.\"\n\n3. In the \"Deep networks as functional programs\" section: \"Building on previous work, we learn behavior",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What learning technique is used to train the network-assembly parameters in the dynamic neural module network paper?",
+    "expect_substring": "reinforcement",
+    "cart_answer": "<|START_TEXT|>The dynamic neural module network paper uses reinforcement learning to train the network-assembly parameters. Specifically, they jointly learn both the module parameters and the layout prediction parameters using reinforcement learning, with only (world, question, answer) triples as supervision. This allows the model to learn how to assemble modules into complete networks without explicit layout supervision.<|END_TEXT|>",
+    "rag_answer": "The question asks about the learning technique used to train the network-assembly parameters in the dynamic neural module network paper. I need to find this information in the provided document.\n\nLooking at the document, I can see in the introduction section:\n\n\"Our model has two components, trained jointly: first, a collection of neural “modules” that can be freely composed (fig:teasera); second, a network layout predictor that assembles modules into complete deep networks tailored to each question (fig:teaserb).\"\n\nAnd later in the introduction:\n\n\"Parameters for these modules are learned jointly with network-assembly parameters via reinforcement learning, with only (world,",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "What multi-parallel text resource is used for annotation projection in the cross-lingual POS tagging work?",
+    "expect_substring": "Bible",
+    "cart_answer": "<|START_TEXT|>The multi-parallel text resource used for annotation projection is fragments of the Bible. This is mentioned in the document \"Cross-lingual transfer learning of sequence models\".<|END_THINKING|><|START_TEXT|>The work uses fragments of the Bible as the multi-parallel text resource for annotation projection.<|END_TEXT|>",
+    "rag_answer": "The document mentions that for annotation projection, they use fragments of the Bible as the multi-parallel text resource. Specifically, it states: \"Our only assumption is a bit of text translated into multiple languages, specifically, fragments of the Bible. We will use Bible data for annotation projection, as well as for learning cross-lingual word embeddings (§3).\" Therefore, the multi-parallel text resource used is fragments of the Bible.<|END_THINKING|><|START_TEXT|>According to \"Empirical Gaussian priors for cross-lingual transfer learning,\" the multi-parallel text resource used for annotation projection is fragments of the Bible.<|END_TEXT|>",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "From what are the parameters of the empirical Gaussian prior estimated?",
+    "expect_substring": "source language models",
+    "cart_answer": "<|START_TEXT|>The parameters of the empirical Gaussian prior are estimated directly from source language models. Specifically, the mean parameters are set to the average values of the corresponding parameters across the source models, and the variance parameters are learned from the source models as well. This approach allows the prior to capture the typical feature distributions observed across multiple languages, thereby providing a more informed regularization for cross-lingual transfer learning.<|END_TEXT|>",
+    "rag_answer": "The question asks: \"From what are the parameters of the empirical Gaussian prior estimated?\" We need to find the answer in the provided document. The document is titled \"Empirical Gaussian priors for cross-lingual transfer learning\". The relevant section is likely the one describing empirical Gaussian priors. Let's search for \"empirical Gaussian prior\" and \"parameters\" in the document.\n\nIn the document, there is a section titled \"Empirical Gaussian priors\" (though it's not explicitly a heading, it's part of the text). The text says: \"In empirical Bayes BIBREF6, the parameters are learned from w∈R^m4 itself. B",
+    "cart_ok": true,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "What optimization algorithm is used to maximize the regularized objectives in the empirical Gaussian priors paper?",
+    "expect_substring": "L-BFGS",
+    "cart_answer": "<|START_TEXT|>The paper uses L-BFGS to maximize both the baseline L2-regularized objectives and the empirical Gaussian prior objectives. This is mentioned in the section discussing empirical Gaussian priors.<|END_TEXT|>",
+    "rag_answer": "The question asks: \"What optimization algorithm is used to maximize the regularized objectives in the empirical Gaussian priors paper?\" We need to find the answer in the provided document. The document is titled \"Empirical Gaussian priors for cross-lingual transfer learning\". We need to locate the part where they describe the optimization algorithm used for maximizing the regularized objectives. \n\nLooking through the document, there is a section that says: \"We use L-BFGS to maximize our baseline L2-regularized objectives, as well as our empirical Gaussian prior objectives.\" This is found near the end of the document, after the description of L2-Prior and EmpGauss",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "What distance measure is used to identify confusable words at a recognition node in the speech-system evaluation method?",
+    "expect_substring": "Levenshtein",
+    "cart_answer": "<|START_TEXT|>The distance measure used to identify confusable words at a recognition node is the Levenshtein distance, also known as the edit distance. This is mentioned in the document \"Evaluation without Testing\" where it states that they used Levenshtein distance to analyze and identify confusion among active words at a given node. The threshold for this distance is set based on the edit distance between two specific words, Sahi and Galat, which have 100% recognition. If the distance between any two active words at a node is lower than this threshold, those words are considered confusable.<|END_THINKING|><|START_TEXT|>The Levenshtein distance (edit distance) is",
+    "rag_answer": "The question asks: \"What distance measure is used to identify confusable words at a recognition node in the speech-system evaluation method?\" \n\nWe need to find the answer in the provided documents. The document is titled \"Evaluating the Performance of a Speech Recognition based System\". \n\nIn the section \"Evaluation without Testing\", it says: \"We hypothesize that we can identify the performance of a menu based speech system by identifying the possible confusion among all the words that are active at a given node. If active words at a given node are phonetically similar it becomes difficult for the speech recognition system to distinguish them which in turn leads to recognition errors.",
+    "cart_ok": true,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "For which inquiry system was the speech evaluation case study carried out?",
+    "expect_substring": "Railway",
+    "cart_answer": "<|START_TEXT|>The speech evaluation case study was carried out for the Indian Railway Inquiry System. This is mentioned in the document \"Evaluation without Testing\" where it states that the analysis was used for a speech solution developed for Indian Railway Inquiry System to identify bottlenecks before its launch.<|END_TEXT|>",
+    "rag_answer": "<|START_TEXT|>The case study for speech evaluation was carried out for the Indian Railway Inquiry System. This is mentioned in the document where they applied the analysis to identify bottlenecks before the system's launch.<|END_TEXT|>",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "In what language was the railway information speech system developed?",
+    "expect_substring": "Hindi",
+    "cart_answer": "<|START_TEXT|>The railway information speech system was developed in Hindi. This is mentioned in the case study section of the document.<|END_TEXT|>",
+    "rag_answer": "The question asks: \"In what language was the railway information speech system developed?\" We need to find the answer in the provided documents.\n\nWe have a document titled \"Evaluating the Performance of a Speech Recognition based System\". It contains a case study about a railway information system. The relevant part is in the \"Case Study\" section. It says: \"A schematic of a speech based Railway Information system, developed for Hindi language is shown in Fig. FIGREF4.\" So the language is Hindi.\n\nThus, the answer is: Hindi. We should mention the document title naturally. The answer should be concise, 2-5 sentences.",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_04012",
+    "q": "Which battle is used as the opening example when introducing event extraction from text?",
+    "expect_substring": "Fredericksburg",
+    "cart_answer": "<|START_TEXT|>The opening example used to introduce event extraction from text is the Battle of Fredericksburg. This is mentioned in the first paragraph of the paper, where the authors highlight various \"events\" within the description of the battle, such as \"fought,\" \"commanded,\" \"assaults,\" and \"battles.\" The example illustrates how multiple events can be embedded within a single text and how event extraction aims to identify and extract these events.<|END_TEXT|>",
+    "rag_answer": "The question asks: \"Which battle is used as the opening example when introducing event extraction from text?\" We need to find the answer in the provided documents.\n\nWe have a document titled \"Detecting and Extracting Events from Text Documents\". The document includes an introduction that mentions an example. Let's read the introduction section.\n\nThe introduction says: \"Consider the first paragraphs of the article on the Battle of Fredericksburg in the English Wikipedia, accessed on May 5, 2012. We have highlighted the “events\" in the paragraph.\"\n\nSo the battle used as the opening example is the Battle of Fredericksburg.\n\nThus, the answer is: The Battle of",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_04012",
+    "q": "Event extraction applications are discussed for summarization, the medical domain, and posts from which platform?",
+    "expect_substring": "Twitter",
+    "cart_answer": "The user asks: \"Event extraction applications are discussed for summarization, the medical domain, and posts from which platform?\" We need to answer based on the provided document. The document is titled \"Detecting and Extracting Events from Text Documents\". It mentions applications of event detection and extraction systems, particularly in summarization, in the medical domain and in the context of Twitter posts. So the platform is Twitter. We need to answer concisely, mention the document title. The answer: According to \"Detecting and Extracting Events from Text Documents\", event extraction applications are discussed for summarization, the medical domain, and posts from Twitter.<|END_THINKING|><|START_TEXT|>According to “Detecting and",
+    "rag_answer": "The question asks: \"Event extraction applications are discussed for summarization, the medical domain, and posts from which platform?\" We need to find the answer in the provided documents.\n\nWe have a document titled \"Detecting and Extracting Events from Text Documents\". The abstract or introduction mentions applications: \"We also discuss applications of event detection and extraction systems, particularly in summarization, in the medical domain and in the context of Twitter posts.\" Later, it says: \"We also discuss application of event extraction in the biomedical domain and in the context of Twitter messages.\"\n\nThus, the platform is Twitter. The question asks for the platform name. The answer is Twitter",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1611_01576",
+    "q": "Up to how many times faster are QRNNs than LSTMs at train and test time?",
+    "expect_substring": "16",
+    "cart_answer": "<|START_TEXT|>According to \"Quasi-Recurrent Neural Networks\", QRNNs are up to 16 times faster than LSTMs at both train and test time.<|END_TEXT|>",
+    "rag_answer": "The question asks: \"Up to how many times faster are QRNNs than LSTMs at train and test time?\" We need to find the answer in the provided documents. The first document is titled \"Quasi-Recurrent Neural Networks\". It contains a description of QRNNs and mentions speed improvements. Let's search for the phrase \"faster\" or \"times faster\" in the document.\n\nIn the first paragraph: \"Due to their increased parallelism, they are up to 16 times faster at train and test time.\" This directly answers the question: up to 16 times faster.\n\nThus, the answer is: According to \"Quasi",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  }
+]

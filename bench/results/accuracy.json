@@ -1,0 +1,167 @@
+[
+  {
+    "doc_id": "1601_00901",
+    "q": "What dataset was used to evaluate the joint ontology and semantic parser approach?",
+    "expect_substring": "Wikipedia",
+    "cart_answer": "-1. The grammar induction of the grammar induction of the grammar induction of the grammar induction of the grammar rules that can be used in the grammar induction of the grammar induction of the question parsing and the grammar induction of the grammar induction of the question answering the question answering questions. The model\n\n##\n\n##1. The model the grammar induction of the question answering questions about the world representations of the grammar induction of the input-output mapping from the first, and the question answering questions about the1. We use of1. The model parameters for the grammar induction of the grammar induction of the first, and the words and the grammar, and the",
+    "rag_answer": "<|START_TEXT|>According to \"Joint learning of ontology and semantic parser from text\", the approach was evaluated on the first sentences of Wikipedia pages describing people.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_00901",
+    "q": "What type of grammar is induced from the semantically annotated text in the joint ontology learning approach?",
+    "expect_substring": "context-free",
+    "cart_answer": "",
+    "rag_answer": "<|START_TEXT|>According to \"Joint learning of ontology and semantic parser from text\", the grammar induced from the semantically annotated text is a **context‑free grammar (CFG)**. The method uses a semi‑automatic bootstrapping procedure that constructs a CFG from frequent patterns in the text, which is then used to parse sentences into semantic trees.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_00901",
+    "q": "Which knowledge base provides the relations used as the training set for relation prediction in the ontology learning paper?",
+    "expect_substring": "DBpedia",
+    "cart_answer": "- - the original paper, for each question generation of the grammar induction to generate paraphrases for each question answering free text generation of the grammar induction of the1. We use of the grammar induction of the1. We use of the1. We also use of the1. . The grammar rules for each sentence generation of the target task-specific to the grammar induction of the words in the target answer extraction of1. The results show that the grammar induction of the grammar-based on the grammar-based on the grammar induction of the grammar, given a grammar induction of the grammar-based on the grammar-based on the original question answering free text generation",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"Which knowledge base provides the relations used as the training set for relation prediction in the ontology learning paper?\"\n    *   **Source Material:** A set of documents provided in the prompt.\n    *   **Goal:** Identify the specific knowledge base mentioned in the \"ontology learning paper\" (the first document) that provided the relations used for training the relation prediction model.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"ontology learning\", \"relations\", \"training set\", \"knowledge base\", \"DBpedia\", \"Freebase\".\n\n3.",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What are the two jointly trained components of the dynamic neural module network?",
+    "expect_substring": "layout",
+    "cart_answer": "",
+    "rag_answer": "<|START_TEXT|>According to \"Learning to Compose Neural Networks for Question Answering\", the dynamic neural module network has two jointly trained components: a collection of neural “modules” that can be freely composed, and a network layout predictor that assembles modules into complete deep networks tailored to each question.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What form of supervision does the dynamic neural module network require for training?",
+    "expect_substring": "triples",
+    "cart_answer": "",
+    "rag_answer": "<|START_TEXT|>The dynamic neural module network is trained using only (world, question, answer) triples as supervision. According to the first document, it requires no supervision of network layouts, and parameters are learned jointly with network-assembly parameters via reinforcement learning based solely on these triples.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What learning technique is used to train the network-assembly parameters in the dynamic neural module network paper?",
+    "expect_substring": "reinforcement",
+    "cart_answer": "We present in the first apply to allow for sequence modeling of the first apply to the recurrent connections between layers of the1. The original Transformer, but we also allow for sequence modeling of the,1. The first introduced in the final predictions. The first introduced in the convolutional layers of1. We also incorporate a recurrent neural network components of the1. The first compute the1. The first introduced in1,1. The first introduced in,1. The first introduced in as well as well as well as well as the first, and the first, and1.1. The first,, as well as a function composition",
+    "rag_answer": "<|START_TEXT|>The dynamic neural module network paper uses **reinforcement learning** to jointly learn the network-assembly parameters (layout model) and the module execution parameters. Specifically, they train the layout predictor and the modules using only (world, question, answer) triples as supervision, with reinforcement learning guiding the assembly process.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "What multi-parallel text resource is used for annotation projection in the cross-lingual POS tagging work?",
+    "expect_substring": "Bible",
+    "cart_answer": "<|START_TEXT|>Semantic parsing and semantic parsing the grammar induction of the grammar induction of the grammar induction of1. The grammar induction of1. The main path to1.1. The grammar induction of1. The grammar rules and semantic grammar induction of1.2.1. The grammar rules for each sentence-level of1. The semantic grammar rules for each sentence-level 1.1. The grammar rules are used in the, and the1. The remainder of1. The grammar rules for each sentence-level of the1. The main path,1. The grammar rules. The grammar rules for each sentence-level semantics, but not only a",
+    "rag_answer": "<|START_TEXT|>The cross‑lingual POS tagging work uses fragments of the Bible as the multi‑parallel text resource for annotation projection. According to the document, the only assumption made is “a bit of text translated into multiple languages, specifically, fragments of the Bible,” which are used to align 15 languages and project POS tags.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "From what are the parameters of the empirical Gaussian prior estimated?",
+    "expect_substring": "source language models",
+    "cart_answer": "<|START_TEXT|>We present paper, and the1\n\n##1. We use the most common patterns of1. We use of the target language generation of the1. We use of the best known to the grammar-based on the following the1. The second-order to2\n\n##1.2\n\n##\n\n##1.2\n\n##1. The key phrase-level features. We use of the2\n\n##1. The rest of the word-level of the2. We use of2\n\nAs a word-level features. The results on the1. We use of1. We use of1.2. The main contributions to1",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"From what are the parameters of the empirical Gaussian prior estimated?\"\n    *   **Source Material:** A collection of documents provided in the prompt.\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Mention the document title if used. If the answer isn't in the documents, say so.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"empirical Gaussian prior\", \"parameters\", \"estimated\", \"source language\", \"source models\".\n\n3.  **Evaluate Document 1 (Empirical Gaussian priors",
+    "cart_ok": false,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "What optimization algorithm is used to maximize the regularized objectives in the empirical Gaussian priors paper?",
+    "expect_substring": "L-BFGS",
+    "cart_answer": "1. The second language model to generate paraphrases. We use of the word-level of the target language modeling of the2. We use the word-level of the grammar-based on the grammar-based on the grammar-based on the best performance on the word-level of the grammar-based on the word-level of the word-level of the grammar-based on the1. The key words not only the original paper\n\n##1. The keyphrase-level of a large-scale experiments on the1. We use of1. We use of1. The key-value of a word-level-1. We use of1.2. The keyphrase-level",
+    "rag_answer": "<|START_TEXT|>According to \"Empirical Gaussian priors for cross-lingual transfer learning\", the authors use L-BFGS to maximize both the baseline L2-regularized objectives and the empirical Gaussian prior objectives.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "What distance measure is used to identify confusable words at a recognition node in the speech-system evaluation method?",
+    "expect_substring": "Levenshtein",
+    "cart_answer": "We present in the following: (1. We use of the underlying grammar-based parsing a single-sentence to generate paraphrases to generate paraphrases. The keyphrase-level of1. The rest of2\n\n1. . We use of the2.1. The rest of the2\n\n##\n\n1. We use of the following: (Section 2. We use of the2. The key phrases and the1.2\n\n##1 and the2.0\n\nThe key phrases and the grammar-based on the grammar-based question generation. The algorithm for each node-to-word sense-1. We use of the grammar-based",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** What distance measure is used to identify confusable words at a recognition node in the speech-system evaluation method?\n    *   **Source Material:** A set of documents provided in the prompt.\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Mention the document title if used. If not found, say so.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"distance measure\", \"confusable\", \"recognition node\", \"speech-system\", \"evaluation\", \"Levenshtein\".\n\n3.  **",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "For which inquiry system was the speech evaluation case study carried out?",
+    "expect_substring": "Railway",
+    "cart_answer": "We present-tense to free text generation of2\n\n1. The second language generation of the2\n\n1. The results show that the1. The results show that the3. We use of1. We use to generate paraphrases to the largest publicly available data and the following the following: (1. We use to1. We use-1. We use of1. We use of the system and the grammar-based approach to generate paraphrases and the best performance on the first, and the original question answering free text generation of the grammar-based approach to generate paraphrases to generate paraphrases to generate paraphrases to generate",
+    "rag_answer": "<|START_TEXT|>The case study for speech evaluation was carried out for the Indian Railway Inquiry System. This is mentioned in the document \"Evaluating the Performance of a Speech Recognition based System\" under the section discussing confusability analysis.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "In what language was the railway information speech system developed?",
+    "expect_substring": "Hindi",
+    "cart_answer": "The term extraction of the word forms of the word forms of the user queries about the user queries about a particular type of the word forms of the word sense of the1. The first identify the1. The rest of the1. The rest of the words like the1. The first, for a set of the word forms of the word forms of1. The term extraction of the1. The first theThe rest of the word forms of as the as a lexical items like the1. The term frequency of the word forms of the word forms of the word forms of the1. The term the2. The main verb",
+    "rag_answer": "1.  **Analyze the Request:** The user wants to know the language in which the railway information speech system was developed, based on the provided documents.\n\n2.  **Scan the Documents for Keywords:** I need to look for \"railway\", \"information\", \"speech system\", \"language\", \"Hindi\", \"Indian\", etc.\n\n3.  **Document 1 (req-8cb0c1c2172746518f654142510fac11 - Evaluating the Performance of a Speech Recognition based System):**\n    *   Title mentions \"Speech Recognition based System\".\n    *   It discusses menu-based speech solutions.\n   ",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_04012",
+    "q": "Which battle is used as the opening example when introducing event extraction from text?",
+    "expect_substring": "Fredericksburg",
+    "cart_answer": "We present in most frequent words like the \"gotchasms to the \"gotchasms to be able to the1. The first-person pronouns (gender-neutral pronouns (gender bias inThe paper: (gender-neutral pronouns (gender pronoun gender-marked gender-marked pronouns (gender bias in the1. The first sentences with a gender bias in the1. The first-person pronouns (see Section \"gotchasers. The results. The results show that the1. We also used inThe paper: gender bias in the grammar induction of1. The first-person pronouns, to the gender bias in the gender bias in the grammar induction ofThe",
+    "rag_answer": "<|START_TEXT|>The opening example used to illustrate event extraction from text is the Battle of Fredericksburg. This is mentioned in the first document, \"Detecting and Extracting Events from Text Documents,\" where the paragraph about the battle is highlighted to show various events (e.g., fought, commanded, assaults, casualties). The example demonstrates how different verbs and nouns can represent events, and how event extraction aims to identify them automatically.<|END_TEXT|>",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_04012",
+    "q": "Event extraction applications are discussed for summarization, the medical domain, and posts from which platform?",
+    "expect_substring": "Twitter",
+    "cart_answer": "TheIn the most of the most of the best performing well-known datasets and the, in the andThe paper: (1. The paper: the training andTo be-1. The results on the cost in terms ofThe paper: (i- and the best performing well-known as well-known as well as well-known as well as a language modeling. The results for each token-level language modeling the best known as to the best known as-1. The results on the, to the best-known datasets, as a large language modeling the1. The results on the training data, in terms of1. The results on the",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"Event extraction applications are discussed for summarization, the medical domain, and posts from which platform?\"\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Mention the document title if used. If the answer isn't in the documents, say so.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"event extraction\", \"summarization\", \"medical\", \"platform\", \"Twitter\", \"posts\".\n\n3.  **Locate Relevant Information:**\n    *   *Document 1:* \"Detecting and Extracting Events from Text",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1611_01576",
+    "q": "Up to how many times faster are QRNNs than LSTMs at train and test time?",
+    "expect_substring": "16",
+    "cart_answer": "1. We also for language modeling the Transformer architecture search space-to-sequence-to-date state-of-the best known architectures for sequence modeling the convolution-based to2014, and the most of the most1\n\n##1.1. The Transformer architecture search space for language modeling the Transformer architecture search space complexity, that the best known architectures that are as well as well- and the model architecture search space for language modeling capacity-1. We also as well as well-known architectures for sequence modeling capacity-constrained optimization for sequence modeling language modeling capacity scaling to match the best known results on the Transformer-based on the best results on the Transformer-based models such as well",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"Up to how many times faster are QRNNs than LSTMs at train and test time?\"\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Use the provided documents. If the answer isn't there, say so.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"QRNN\", \"LSTM\", \"faster\", \"times\", \"train\", \"test\", \"speed\", \"performance\".\n\n3.  **Evaluate Document 1 (Quasi-Recurrent Neural Networks):**\n    *   *Title",
+    "cart_ok": false,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  }
+]

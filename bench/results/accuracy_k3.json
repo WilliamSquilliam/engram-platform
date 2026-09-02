@@ -1,0 +1,167 @@
+[
+  {
+    "doc_id": "1601_00901",
+    "q": "What dataset was used to evaluate the joint ontology and semantic parser approach?",
+    "expect_substring": "Wikipedia",
+    "cart_answer": "The user is asking about the dataset used to evaluate the joint ontology and semantic parser approach described in the provided text. I need to find the specific dataset mentioned in the text.\n\nLooking through the text, I can see several references to datasets:\n\n1. \"We evaluated our approach on the standard datasets for visual question answering (VQA) and visual entailment (SNLI-Visual).\"\n2. \"We also evaluate on the Flickr30k dataset.\"\n3. \"We also evaluate on the ReferItGame dataset.\"\n4. \"We also evaluate on the ReferItGame dataset.\"\n5. \"We also evaluate on the Flickr30k",
+    "rag_answer": "According to \"Joint learning of ontology and semantic parser from text\", the approach was evaluated on the first sentences of Wikipedia pages describing people.",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_00901",
+    "q": "What type of grammar is induced from the semantically annotated text in the joint ontology learning approach?",
+    "expect_substring": "context-free",
+    "cart_answer": "The user is asking about the type of grammar induced from the semantically annotated text in the joint ontology learning approach. I need to find the answer in the provided text.\n\nLooking at the text, I can see the following relevant sections:\n\n1. The abstract mentions: \"We present a model for the task of learning a domain ontology from a collection of text. The model is based on a combination of unsupervised learning and supervised learning techniques. The model is based on a combination of unsupervised learning and supervised learning techniques.\"\n\nWait, that's not quite right. Let me read more carefully.\n\nThe abstract mentions: \"We present a model for the task of",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"What type of grammar is induced from the semantically annotated text in the joint ontology learning approach?\"\n    *   **Source Material:** The user provided a set of documents. I need to find the relevant document and section that answers this specific question.\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Mention the document title if used.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"joint ontology learning\", \"semantically annotated text\", \"grammar\", \"induced\".\n\n3.  **Evaluate Document ",
+    "cart_ok": false,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_00901",
+    "q": "Which knowledge base provides the relations used as the training set for relation prediction in the ontology learning paper?",
+    "expect_substring": "DBpedia",
+    "cart_answer": "The user is asking about a specific paper on ontology learning. They want to know which knowledge base provides the relations used as the training set for relation prediction in the ontology learning paper.\n\nLooking at the provided text, I need to find the answer. The text mentions \"Using relations from DBpedia as a training set\" in the section discussing the experiments. This indicates that the relations used for training are from DBpedia.\n\nLet me locate the exact reference in the text:\n- In the section discussing experiments, it says: \"Using relations from DBpedia as a training set, several models to predict relations have been trained and evaluated.\"\n\nSo the",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"Which knowledge base provides the relations used as the training set for relation prediction in the ontology learning paper?\"\n    *   **Source Material:** A set of documents provided in the prompt.\n    *   **Goal:** Identify the specific knowledge base mentioned in the \"ontology learning paper\" (the first document) that provided the relations used for training the relation prediction model.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"ontology learning\", \"relations\", \"training set\", \"knowledge base\", \"DBpedia\", \"Freebase\".\n\n3.",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What are the two jointly trained components of the dynamic neural module network?",
+    "expect_substring": "layout",
+    "cart_answer": "The user asks: \"What are the two jointly trained components of the dynamic neural module network?\" We need to answer based on the provided document. The document is a research paper about dynamic neural module networks. We need to find the answer within the text. The question: \"What are the two jointly trained components of the dynamic neural network?\" Actually \"dynamic neural module network\" is the name of the model. The paper describes that the model has two components: a layout model and an execution model. Let's search the text for \"layout model\" and \"execution model\". The abstract says: \"We describe a dynamic neural network architecture for",
+    "rag_answer": "The question asks about the two jointly trained components of the dynamic neural module network. I need to find this information in the provided documents.\n\nLooking at the first document titled \"Learning to Compose Neural Networks for Question Answering\", I can see in the introduction section that it mentions:\n\n\"Our model has two components, trained jointly: first, a collection of neural “modules” that can be freely composed (fig:teasera); second, a network layout predictor that assembles modules into complete deep networks tailored to each question (fig:teaserb).\"\n\nThis directly answers the question. The two components are:\n1. A collection of neural modules that",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What form of supervision does the dynamic neural module network require for training?",
+    "expect_substring": "triples",
+    "cart_answer": "Scanning the document, I see the paper describes a dynamic neural network architecture for sequence modeling. The user is asking about the form of supervision required for training this network.\n\nLooking at the text, I can see that the model is trained using (world, question, answer) triples as supervision. The paper states: \"Training data to train the model is (world, question, answer) triples\" and later mentions \"our approach requires only a small amount of supervision\". \n\nSo the answer is that the dynamic neural module network requires (world, question, answer) triples as supervision during training.The dynamic neural module network is trained",
+    "rag_answer": "The dynamic neural module network is trained using only (world, question, answer) triples as supervision. According to the first document, it requires no supervision of network layouts, and parameters are learned jointly with network-assembly parameters via reinforcement learning using these triples.",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_01705",
+    "q": "What learning technique is used to train the network-assembly parameters in the dynamic neural module network paper?",
+    "expect_substring": "reinforcement",
+    "cart_answer": "The user is asking about the learning technique used to train the network-assembly parameters in the dynamic neural module network paper. I need to find the answer in the provided text.\n\nLooking at the text, I can see several sections that discuss the training process:\n\n1. In the \"Model\" section, it mentions that the network is trained using \"training\" and \"validation\" sets, and the parameters are updated using stochastic gradient descent (SGD).\n\n2. In section 3.2, it mentions that the network is trained using \"Adam\" optimizer.\n\n3. In section 3.3, it mentions that the network is trained using",
+    "rag_answer": "The dynamic neural module network paper uses **reinforcement learning** to jointly learn the network-assembly parameters (layout model) and the module execution parameters. Specifically, they train the layout predictor and the modules together using reinforcement learning, with only (world, question, answer) triples as supervision.",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "What multi-parallel text resource is used for annotation projection in the cross-lingual POS tagging work?",
+    "expect_substring": "Bible",
+    "cart_answer": "The document mentions that the Paralel Corpora for Under-Resourced Languages (ParaC) is used as the multi-parallel text resource for annotation projection. This corpus contains sentences in multiple languages, each paired with their translations. The authors used this resource to train a cross-lingual part-of-speech (POS) tagger.",
+    "rag_answer": "The cross‑lingual POS tagging work uses fragments of the Bible as the multi‑parallel text resource for annotation projection. According to the document, the only assumption made is a bit of text translated into multiple languages, specifically fragments of the Bible, which are used to align 15 languages and project POS tags.",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "From what are the parameters of the empirical Gaussian prior estimated?",
+    "expect_substring": "source language models",
+    "cart_answer": "The parameters of the empirical Gaussian prior are estimated from the training data. Specifically, the mean parameters are estimated as the average of the weights from the trained model on the source data, and the variance parameters are estimated as the variance of the weights. This is described in the section \"Empirical Gaussian prior estimation\" in the paper.",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"From what are the parameters of the empirical Gaussian prior estimated?\"\n    *   **Source Material:** A collection of documents provided in the prompt.\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Mention the document title if used. If not found, say so briefly.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"empirical Gaussian prior\", \"parameters\", \"estimated\", \"source language\", \"source models\".\n\n3.  **Evaluate Document 1 (Empirical Gaussian priors for cross-lingual",
+    "cart_ok": false,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02166",
+    "q": "What optimization algorithm is used to maximize the regularized objectives in the empirical Gaussian priors paper?",
+    "expect_substring": "L-BFGS",
+    "cart_answer": "The user is asking about the optimization algorithm used to maximize the regularized objectives in the empirical Gaussian priors paper. I need to find the relevant information in the provided text.\n\nLooking at the text, I can see a section that discusses the optimization algorithm. The text mentions:\n\n\"These parameters are estimated from a large corpus of questions and answers. We use the L-BFGS algorithm to maximize the log-likelihood of the model parameters.\"\n\nThis is found in the section discussing the estimation of parameters for the Gaussian priors. The text specifically states that they use the L-BFGS algorithm to maximize the log-likelihood of the model parameters.\n\nSo the answer is",
+    "rag_answer": "According to \"Empirical Gaussian priors for cross-lingual transfer learning\", the authors use L-BFGS to maximize both the baseline L2-regularized objectives and the empirical Gaussian prior objectives.",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "What distance measure is used to identify confusable words at a recognition node in the speech-system evaluation method?",
+    "expect_substring": "Levenshtein",
+    "cart_answer": "The user is asking: \"What distance measure is used to identify confusable words at a recognition node in the speech-system evaluation method?\" They want a concise answer, referencing the document if needed.\n\nWe need to find the answer in the provided text. The text is a research paper excerpt about paraphrase detection and semantic role labeling. Let's search for \"distance\" or \"confusable\" or \"edit distance\" or \"Levenshtein\" in the text.\n\nLooking at the text, I see a section: \"In the previous section we introduced the idea of using the Levenshtein distance as a measure of similarity between two strings.\" It",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** What distance measure is used to identify confusable words at a recognition node in the speech-system evaluation method?\n    *   **Source Material:** A set of documents provided in the prompt.\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Mention the document title if used. If not found, say so.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"distance measure\", \"confusable\", \"recognition node\", \"speech-system\", \"evaluation\", \"Levenshtein\".\n\n3.  **",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "For which inquiry system was the speech evaluation case study carried out?",
+    "expect_substring": "Railway",
+    "cart_answer": "The question asks: \"For which inquiry system was the speech evaluation case study carried out?\" The user is asking about the case study described in the provided text. I need to locate the relevant information in the text.\n\nLooking at the text, I can see a section that mentions a case study. The text says: \"We evaluate the performance of a semantic graph-based approach to generate paraphrases for a given input sentence. We use a large-scale dataset of question-answer pairs from the Quora question answering dataset.\" Wait, that's not exactly what I'm looking for. Let me read more carefully.\n\nThe text mentions: \"We evaluate the performance of",
+    "rag_answer": "The speech evaluation case study was carried out for the Indian Railway Inquiry System. This is mentioned in the document titled \"Evaluating the Performance of a Speech Recognition based System\" under the section discussing the use of Levenshtein distance to identify bottlenecks. It states: \"Actual use of this analysis was carried out for a speech solution developed for Indian Railway Inquiry System to identify bottlenecks in the system before its actual launch.\"",
+    "cart_ok": false,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_02543",
+    "q": "In what language was the railway information speech system developed?",
+    "expect_substring": "Hindi",
+    "cart_answer": "The user asks: \"In what language was the railway information speech system developed?\" They want to know the language of the railway information speech system. We have a document provided in the prompt. The document is about \"In what language was the railway information speech system developed?\" Actually the user asks a question, but we need to answer based on the provided text. The text is a research paper about event extraction from text, but it includes a section about a case study: \"A schematic of a speech based railway information system, developed in Hindi language, is shown in Figure 4.\" Let's check the text. The user provided a large",
+    "rag_answer": "1.  **Analyze the Request:** The user wants to know the language in which the railway information speech system was developed, based on the provided documents.\n\n2.  **Scan the Documents for Keywords:** I need to look for \"railway\", \"information\", \"speech system\", \"language\", \"Hindi\", \"Indian\", etc.\n\n3.  **Document 1 (Evaluating the Performance of a Speech Recognition based System):**\n    *   Title: \"Evaluating the Performance of a Speech Recognition based System\"\n    *   Content: Discusses menu-based speech solutions, IVR, Wizard of Oz, Levenshtein distance.\n    *  ",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_04012",
+    "q": "Which battle is used as the opening example when introducing event extraction from text?",
+    "expect_substring": "Fredericksburg",
+    "cart_answer": "The user asks: \"Which battle is used as the opening example when introducing event extraction from text?\" They want to know which battle is used as the opening example when introducing event extraction from text. I need to find the relevant part in the provided text.\n\nLooking at the text, I see the first paragraph: \"The Battle of Fredericksburg was fought December 11–15, 1862, in and around Fredericksburg, Virginia, between General Robert E. Lee's Confederate Army of Northern Virginia and the Union Army of the Potomac, commanded by Maj. Gen. Ambrose E. Burnside. The Union army's futile frontal assaults on December ",
+    "rag_answer": "The opening example used to illustrate event extraction from text is the Battle of Fredericksburg. This is mentioned in the first document titled \"Detecting and Extracting Events from Text Documents,\" where the paragraph about the battle is highlighted to show various events (e.g., fought, commanded, assaults, casualties).",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1601_04012",
+    "q": "Event extraction applications are discussed for summarization, the medical domain, and posts from which platform?",
+    "expect_substring": "Twitter",
+    "cart_answer": "The document mentions that event extraction applications include summarization, the medical domain, and posts from Twitter.",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"Event extraction applications are discussed for summarization, the medical domain, and posts from which platform?\"\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Mention the document title if used. If the answer isn't in the documents, say so.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"event extraction\", \"summarization\", \"medical domain\", \"platform\", \"Twitter\", \"posts\".\n\n3.  **Locate Relevant Information:**\n    *   *Document 1:* \"Detecting and Extracting Events from",
+    "cart_ok": true,
+    "rag_ok": true,
+    "cart_error": null,
+    "rag_error": null
+  },
+  {
+    "doc_id": "1611_01576",
+    "q": "Up to how many times faster are QRNNs than LSTMs at train and test time?",
+    "expect_substring": "16",
+    "cart_answer": "The user asks: \"Up to how many times faster are QRNNs than LSTMs at train and test time?\" They want a concise answer based on the provided text. The text mentions: \"Due to its increased parallelism, [QRNN] is up to 16 times faster than LSTM at train and test time.\" Actually, the text says: \"Due to its increased parallelism, [QRNN] is up to 16 times faster than LSTM at train and test time.\" Let's verify: In the abstract: \"Due to its increased parallelism, [QRNN] is up to 16 times faster than LSTM at train and test",
+    "rag_answer": "1.  **Analyze the Request:**\n    *   **Question:** \"Up to how many times faster are QRNNs than LSTMs at train and test time?\"\n    *   **Constraint:** Answer directly and conversationally, 2-5 sentences. Use the provided documents. If the answer isn't there, say so.\n\n2.  **Scan the Documents for Keywords:**\n    *   Keywords: \"QRNN\", \"LSTM\", \"faster\", \"times\", \"train\", \"test\", \"speed\", \"performance\".\n\n3.  **Evaluate Document 1 (Quasi-Recurrent Neural Networks):**\n    *   *Title",
+    "cart_ok": true,
+    "rag_ok": false,
+    "cart_error": null,
+    "rag_error": null
+  }
+]
