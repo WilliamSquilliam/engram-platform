@@ -59,6 +59,11 @@ module "env" {
   tfstate_bucket                  = var.tfstate_bucket
 
   # GPU control plane (platform-admin start/stop of the Lambda serving box)
+  # document connectors
+  connector_enc_key        = var.connector_enc_key
+  sharepoint_client_id     = var.sharepoint_client_id
+  sharepoint_client_secret = var.sharepoint_client_secret
+
   lambda_api_key       = var.lambda_api_key
   cloudflare_api_token = var.cloudflare_api_token
   cloudflare_zone_id   = var.cloudflare_zone_id

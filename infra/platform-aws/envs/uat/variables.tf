@@ -107,3 +107,19 @@ variable "cloudflare_zone_id" {
   type        = string
   default     = ""
 }
+
+# --- document connectors ------------------------------------------------------
+variable "connector_enc_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "sharepoint_client_id" {
+  type    = string
+  default = ""
+}
+variable "sharepoint_client_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}

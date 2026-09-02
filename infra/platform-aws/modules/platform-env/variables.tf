@@ -229,3 +229,24 @@ variable "cloudflare_zone_id" {
   type        = string
   default     = ""
 }
+
+# --- document connectors (Google Drive / SharePoint) --------------------------
+variable "connector_enc_key" {
+  description = "Fernet key encrypting connector OAuth tokens at rest. Empty = connectors stay 'coming soon'."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "sharepoint_client_id" {
+  description = "Entra ID (Azure AD) multi-tenant app client id for the SharePoint connector."
+  type        = string
+  default     = ""
+}
+
+variable "sharepoint_client_secret" {
+  description = "Entra ID app client secret (task secret when set)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

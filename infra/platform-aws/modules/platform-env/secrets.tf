@@ -61,7 +61,14 @@ locals {
     var.cloudflare_zone_id != "" ? { CLOUDFLARE_ZONE_ID = var.cloudflare_zone_id } : {},
   )
 
-  secret_values = merge(local.base_secret_values, local.google_secret_values, local.gpu_secret_values)
+  # Document-connector secrets (token-encryption key + SharePoint OAuth secret) — present
+  # only when configured; absent keeps the connectors in their 'coming soon' state.
+  connector_secret_values = merge(
+    var.connector_enc_key != "" ? { CONNECTOR_ENC_KEY = var.connector_enc_key } : {},
+    var.sharepoint_client_secret != "" ? { SHAREPOINT_CLIENT_SECRET = var.sharepoint_client_secret } : {},
+  )
+
+  secret_values = merge(local.base_secret_values, local.google_secret_values, local.gpu_secret_values, local.connector_secret_values)
 }
 
 resource "aws_secretsmanager_secret" "app" {

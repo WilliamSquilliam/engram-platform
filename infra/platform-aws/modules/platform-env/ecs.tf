@@ -39,6 +39,10 @@ locals {
     # the public API host (the ALB fronts it).
     { name = "BACKEND_INTERNAL_URL", value = local.api_url },
     { name = "GOOGLE_REDIRECT_URI", value = "${local.api_url}/auth/google/callback" },
+    # Connector OAuth callbacks are built from API_BASE_URL ({api}/connectors/<p>/callback);
+    # unset it defaults to localhost and every provider consent round-trip breaks.
+    { name = "API_BASE_URL", value = local.api_url },
+    { name = "SHAREPOINT_CLIENT_ID", value = var.sharepoint_client_id },
 
     # auth / registration posture
     { name = "AUTH_BACKEND", value = "local" },
