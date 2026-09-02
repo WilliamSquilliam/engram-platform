@@ -1,0 +1,6 @@
+# Benchmark run artifacts (sweep.json, accuracy.json, onboard.json) are generated on the box
+# per run — never committed. The directory itself is kept (this .gitignore) so the harness can
+# write here without mkdir races. corpus.jsonl / questions.json (the fixed inputs) live one dir up
+# and ARE committed.
+*
+!.gitignore

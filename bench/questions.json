@@ -1,0 +1,127 @@
+[
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_00901"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_00901"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_01705"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_01705"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_02166"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_02166"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_02543"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_02543"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_04012"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_04012"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_06068"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_06068"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_06081"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1601_06081"
+  },
+  {
+    "q": "Up to how many times faster are QRNNs than LSTMs at train and test time?",
+    "expect_substring": "16",
+    "doc_id": "1611_01576"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1804_09301"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1804_09301"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1807_11714"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1807_11714"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1811_00942"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1811_00942"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1901_11117"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1901_11117"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1908_11365"
+  },
+  {
+    "q": "",
+    "expect_substring": "",
+    "doc_id": "1908_11365"
+  }
+]
