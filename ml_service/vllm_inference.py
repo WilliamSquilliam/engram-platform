@@ -24,7 +24,6 @@ import argparse
 import asyncio
 import hmac
 import inspect
-import json
 import os
 import random
 import threading
@@ -838,14 +837,25 @@ def _engine_hf_config(st: dict):
 
 
 def _onboard_rope() -> tuple[float | None, dict | None]:
-    """(rope_theta, rope_scaling) from the engine's model config, stamped into every cart this
-    service builds so the cc store dtypes de-rotate K correctly. The wheel's rope_theta_of/
-    rope_scaling_of read them across transformers versions (config.rope_theta on <5,
-    config.rope_parameters on 5.x). None/None on a bare run — the cc save then raises if it needs
-    theta, which is the correct loud failure (never silently mis-de-RoPE)."""
+    """(rope_theta, rope_scaling) for every cart this service builds — the cc store dtypes de-rotate
+    K and need theta at save time, so this must be authoritative for the SERVED weights. The wheel's
+    rope_theta_of/rope_scaling_of read them across transformers versions (config.rope_theta on <5,
+    config.rope_parameters on 5.x). Source order: the engine handle's HF config first (the exact
+    config the engine loaded); if the vLLM handle shape doesn't surface it, fall back to a weights-
+    free AutoConfig.from_pretrained(MODEL) — cheap, CPU-only, and authoritative for rope. Only if
+    BOTH miss do we return None, and then a cc save raises loudly rather than mis-de-RoPE silently."""
     from cartridges.cartridge import rope_scaling_of, rope_theta_of
     cfg = _engine_hf_config(_get_engine_state())
-    return rope_theta_of(cfg), rope_scaling_of(cfg)
+    theta, scaling = rope_theta_of(cfg), rope_scaling_of(cfg)
+    if theta is None:
+        try:
+            from transformers import AutoConfig
+            hf = AutoConfig.from_pretrained(MODEL)
+            hf = getattr(hf, "text_config", None) or hf   # multimodal: rope_* on the text tower
+            theta, scaling = rope_theta_of(hf), rope_scaling_of(hf)
+        except Exception as e:  # noqa: BLE001 — fall through to None; cc save raises if theta needed
+            print(f"[onboard_cag] WARN could not read rope config for {MODEL!r}: {e}", flush=True)
+    return theta, scaling
 
 
 def _get_engine_state() -> dict:

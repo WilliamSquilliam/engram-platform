@@ -1097,7 +1097,6 @@ async def onboard_cag_ep(request: Request):
     sees no difference. corpus_dir confinement is enforced on BOTH paths (fail fast before any
     forward)."""
     from fastapi.responses import Response
-    from starlette.requests import Request as _Request  # noqa: F401  (type only; request is a Request)
     body = await request.body()
     try:
         payload = json.loads(body) if body else {}
