@@ -18,8 +18,12 @@ import { useTrainingJob, fmtClock } from "@/lib/useTrainingJob";
 import { fmtBytes, PARSE_BADGE } from "@/lib/format";
 import { Badge, Button, Card, CardBody, CardHeader, Input, Stepper, cn } from "@/components/ui";
 import type {
+  BrowseFolder,
+  BrowseResult,
   Connector,
+  ConnectorConnection,
   Document,
+  ImportStatus,
   ModelTier,
   OnboardEstimate,
   OnboardingStep,
@@ -49,6 +53,18 @@ const stepIndex = (s: OnboardingStep) => Math.max(0, STEP_ORDER.indexOf(s === "r
 // Poll the document list while any file is still parsing so rows transition
 // parsing -> parsed/failed without a manual refresh.
 const PARSE_POLL_MS = 2000;
+// Poll the folder-import status on this cadence while an import is running, so the inline progress
+// line (added/skipped) ticks alongside the doc list's own parse-badge polling.
+const IMPORT_POLL_MS = 3000;
+
+// Human labels for the two external connectors, so copy ("Google Drive connected.") reads right even
+// before the registry loads. Falls back to the registry label / a title-cased id for anything else.
+const PROVIDER_LABEL: Record<string, string> = {
+  google_drive: "Google Drive",
+  sharepoint: "SharePoint",
+};
+const providerLabel = (id: string, connectors: Connector[]) =>
+  connectors.find((c) => c.id === id)?.label || PROVIDER_LABEL[id] || id;
 // Re-fetch the review estimate on this interval while the review step is open, so a fresh estimate
 // and the serving_up gate (Start onboarding re-enables when the GPU comes back) stay current.
 const REVIEW_POLL_MS = 15000;
@@ -75,6 +91,18 @@ export default function OnboardingWizard() {
   const [uploading, setUploading] = useState(false);
   const [gated, setGated] = useState(false); // 409 no_serving_engine — onboarding is queued for a model
   const folderRef = useRef<HTMLInputElement>(null);
+
+  // ---- External-source connectors (Google Drive / SharePoint) ----
+  // A friendly note shown at the top of step 2 after returning from the provider consent screen
+  // (success or failure). Separate from `note` so it survives the upload/import notes.
+  const [connectNote, setConnectNote] = useState("");
+  const [connectError, setConnectError] = useState(false);
+  // Which provider is mid-connect (button spinner), and the folder-picker target once opened.
+  const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
+  const [picker, setPicker] = useState<{ connectionId: string; provider: string } | null>(null);
+  // Live folder-import status. Polled every 3s while running; the terminal line stays until the user
+  // starts another import. null = never started this session (nothing to show).
+  const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
 
   const train = useTrainingJob(id, (job) => {
     // Onboarding finished (or stopped). Success -> the corpus is ready; go to chat.
@@ -198,6 +226,132 @@ export default function OnboardingWizard() {
     accept: DROPZONE_ACCEPT,
     onDrop: (accepted) => handleFiles(accepted),
   });
+
+  // Open the folder picker for the NEWEST connection of a provider (used after the OAuth return and
+  // when a connection already exists). Returns false if none is found yet.
+  const openPickerForProvider = useCallback(async (provider: string): Promise<boolean> => {
+    const conns = await api.connectorConnections().catch(() => [] as ConnectorConnection[]);
+    const mine = conns
+      .filter((c) => c.provider === provider)
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)); // newest first
+    if (!mine.length) return false;
+    setPicker({ connectionId: mine[0].id, provider });
+    return true;
+  }, []);
+
+  // Connect button: if this workspace already linked this provider, jump straight to the folder
+  // picker; otherwise start OAuth and full-page redirect to the provider's consent screen.
+  async function connectProvider(provider: string) {
+    setConnectingProvider(provider);
+    setConnectNote("");
+    setConnectError(false);
+    try {
+      if (await openPickerForProvider(provider)) return; // existing connection — skip OAuth
+      const { url } = await api.connectorAuthorize(provider, id);
+      window.location.assign(url); // leaves the app for the provider consent screen
+    } catch (e: any) {
+      setConnectError(true);
+      setConnectNote(
+        `We could not connect ${providerLabel(provider, connectors)}. Nothing was changed. ` +
+          `Try again or use file upload.`
+      );
+    } finally {
+      setConnectingProvider(null);
+    }
+  }
+
+  // Handle the return from the provider consent screen. The provider redirects back to
+  //   /document-base/{id}/setup?connected={provider}   (success)  or  ?connector_error={provider}.
+  // On success we note it and AUTO-OPEN the folder picker for that provider's newest connection; on
+  // failure we show a friendly inline note. Either way we scrub the query params from the URL (same
+  // history.replaceState approach used for #token scrubbing) so a reload doesn't re-fire this.
+  const oauthReturnHandled = useRef(false);
+  useEffect(() => {
+    if (oauthReturnHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("connected");
+    const errored = params.get("connector_error");
+    if (!connected && !errored) return;
+    oauthReturnHandled.current = true;
+    // Scrub the connector params but keep any others (defensive) + the path.
+    params.delete("connected");
+    params.delete("connector_error");
+    const qs = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+
+    if (connected) {
+      setConnectError(false);
+      setConnectNote(`${providerLabel(connected, connectors)} connected.`);
+      // Make sure the user is on the Documents step, then auto-open the picker for the fresh account.
+      setStep("documents");
+      openPickerForProvider(connected).then((found) => {
+        if (!found) {
+          // The connection row hasn't materialized yet; nudge the user rather than silently doing nothing.
+          setConnectNote(
+            `${providerLabel(connected, connectors)} connected. Click Connect ${providerLabel(
+              connected,
+              connectors
+            )} to pick a folder.`
+          );
+        }
+      });
+    } else if (errored) {
+      setConnectError(true);
+      setConnectNote(
+        `We could not connect ${providerLabel(errored, connectors)}. Nothing was changed. ` +
+          `Try again or use file upload.`
+      );
+      setStep("documents");
+    }
+    // connectors may load a tick later; providerLabel falls back to a built-in label so copy is fine
+    // even on first paint. Re-run once connectors arrive to upgrade any fallback label.
+  }, [connectors, openPickerForProvider]);
+
+  // Kick off a folder import from the picker, then poll import-status until it settles. The doc list's
+  // own parse-badge polling (above) shows files as they land; this drives the compact progress line.
+  const startImport = useCallback(
+    async (connectionId: string, folder: BrowseFolder) => {
+      const res = await api.corpusImport(id, {
+        connection_id: connectionId,
+        folder_id: folder.id,
+        folder_name: folder.name,
+      });
+      setPicker(null);
+      if ("already_running" in res) {
+        setImportStatus({
+          state: "running",
+          imported: 0,
+          skipped: 0,
+          failed: 0,
+          folder_name: folder.name,
+          error: "An import is already running for this document base.",
+        });
+        return;
+      }
+      // Optimistic running state so the line appears immediately; the poll overwrites it.
+      setImportStatus({ state: "running", imported: 0, skipped: 0, failed: 0, folder_name: folder.name, error: null });
+    },
+    [id]
+  );
+
+  // Poll import-status every 3s while an import is running. Refresh the doc list on each tick too so
+  // imported files appear in the list without waiting for the separate parse poll to notice them.
+  const importing = importStatus?.state === "running";
+  useEffect(() => {
+    if (step !== "documents" || !importing) return;
+    const iv = setInterval(async () => {
+      try {
+        const [s] = await Promise.all([
+          api.importStatus(id),
+          api.listDocuments(id).then(setDocs).catch(() => {}),
+        ]);
+        setImportStatus(s);
+      } catch {
+        /* transient — keep polling */
+      }
+    }, IMPORT_POLL_MS);
+    return () => clearInterval(iv);
+  }, [id, step, importing]);
 
   // ---- Step 3: model ----
   async function chooseTier(tierId: string) {
@@ -354,37 +508,56 @@ export default function OnboardingWizard() {
               {note && <p data-testid="upload-note" className="mt-2 text-xs text-slate-400">{note}</p>}
             </div>
 
-            {/* Document-source connectors. filesystem is the upload above; external
-                connectors render as Connect buttons, disabled + "coming soon" until
-                available. Same styling as the unavailable model tiers for consistency. */}
+            {/* Document-source connectors. filesystem is the upload above; external connectors that
+                are available render as enabled "Connect <label>" buttons that start OAuth (or jump
+                straight to the folder picker when a connection already exists). Unavailable ones keep
+                today's disabled "Coming soon" treatment. Connectors add to, never replace, upload. */}
             {connectors.filter((c) => c.id !== "filesystem").length > 0 && (
               <div className="grid grid-cols-2 gap-2" data-testid="connectors">
                 {connectors
                   .filter((c) => c.id !== "filesystem")
-                  .map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      disabled={!c.available}
-                      data-testid={`connector-${c.id}`}
-                      title={c.available ? c.description : `${c.description} — coming soon`}
-                      className={cn(
-                        "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition",
-                        c.available
-                          ? "border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-600"
-                          : "cursor-not-allowed border-slate-800 bg-slate-900/50 text-slate-400 opacity-60"
-                      )}
-                    >
-                      <span>Connect {c.label}</span>
-                      {!c.available && (
-                        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
-                          Coming soon
-                        </span>
-                      )}
-                    </button>
-                  ))}
+                  .map((c) => {
+                    const connecting = connectingProvider === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        disabled={!c.available || connecting}
+                        onClick={c.available ? () => connectProvider(c.id) : undefined}
+                        data-testid={`connector-${c.id}`}
+                        title={c.available ? c.description : `${c.description} — coming soon`}
+                        className={cn(
+                          "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition",
+                          c.available
+                            ? "border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-600"
+                            : "cursor-not-allowed border-slate-800 bg-slate-900/50 text-slate-400 opacity-60"
+                        )}
+                      >
+                        <span>{connecting ? `Connecting ${c.label}…` : `Connect ${c.label}`}</span>
+                        {!c.available && (
+                          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
+                            Coming soon
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
               </div>
             )}
+
+            {/* Return-from-OAuth note + a friendly failure line. Green on success, amber on failure —
+                never red (a failed connect changed nothing). */}
+            {connectNote && (
+              <p
+                data-testid="connect-note"
+                className={cn("text-xs", connectError ? "text-amber-400" : "text-emerald-400")}
+              >
+                {connectNote}
+              </p>
+            )}
+
+            {/* Compact import progress line, shown alongside the live doc list. */}
+            <ImportProgressLine status={importStatus} />
 
             {docs.length > 0 && (
               <ul data-testid="doc-list" className="max-h-48 divide-y divide-slate-800 overflow-y-auto text-sm">
@@ -590,7 +763,259 @@ export default function OnboardingWizard() {
           )}
         </>
       )}
+
+      {/* Folder picker for a linked connection. Rendered outside the step blocks so it can open from
+          the OAuth return (auto-open) or a Connect click. Import starts from inside it. */}
+      <ConnectorFolderPicker
+        open={!!picker}
+        connectionId={picker?.connectionId ?? null}
+        providerName={picker ? providerLabel(picker.provider, connectors) : ""}
+        onClose={() => setPicker(null)}
+        onImport={(folder) => picker && startImport(picker.connectionId, folder)}
+      />
     </main>
+  );
+}
+
+// Compact import progress / terminal line for step 2, shown alongside the live doc list. Mirrors the
+// import-status contract: running -> "N added, M skipped"; terminal states get their own honest copy.
+// The "limited" line deliberately does NOT restate the global beta-limit modal's wording (which also
+// fires) — it only says the import stopped and what is saved.
+function ImportProgressLine({ status }: { status: ImportStatus | null }) {
+  if (!status || status.state === "none") return null;
+  const { state, imported, skipped, failed, folder_name, error } = status;
+
+  if (state === "running") {
+    // The 409 case reuses "running" with an error string carrying the already-running copy.
+    if (error) {
+      return (
+        <p data-testid="import-line" className="text-xs text-amber-400">
+          {error}
+        </p>
+      );
+    }
+    return (
+      <p data-testid="import-line" className="flex items-center gap-2 text-xs text-slate-300">
+        <span
+          aria-hidden
+          className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent"
+        />
+        Importing from {folder_name}: {imported} added
+        {skipped ? `, ${skipped} skipped` : ""}
+        {failed ? `, ${failed} failed` : ""}
+      </p>
+    );
+  }
+  if (state === "done") {
+    return (
+      <p data-testid="import-line" className="text-xs text-emerald-400">
+        Import complete: {imported} added
+        {skipped ? `, ${skipped} skipped` : ""}
+        {failed ? `, ${failed} failed` : ""}.
+      </p>
+    );
+  }
+  if (state === "limited") {
+    return (
+      <p data-testid="import-line" className="text-xs text-amber-400">
+        Import stopped at your beta document limit. Everything imported so far is saved.
+      </p>
+    );
+  }
+  // failed — show the error honestly.
+  return (
+    <p data-testid="import-line" className="text-xs text-red-400">
+      Import failed{error ? `: ${error}` : "."}
+    </p>
+  );
+}
+
+// daisyUI modal folder picker. Browses a connection one level at a time (folders are opaque ids we
+// just pass back), tracks a visited-folder stack for breadcrumb navigation, shows how many supported
+// files sit in the current folder, and imports the current folder (with an in-modal confirm) — its
+// supported files and every subfolder's are added to the document base.
+function ConnectorFolderPicker({
+  open,
+  connectionId,
+  providerName,
+  onClose,
+  onImport,
+}: {
+  open: boolean;
+  connectionId: string | null;
+  providerName: string;
+  onClose: () => void;
+  onImport: (folder: BrowseFolder) => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  // The path back to root: each entry is the folder we drilled INTO (id + name). Empty = top level.
+  const [stack, setStack] = useState<BrowseFolder[]>([]);
+  const [level, setLevel] = useState<BrowseResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  // Which folder the user asked to import — drives the in-modal confirm step.
+  const [confirming, setConfirming] = useState<BrowseFolder | null>(null);
+  const [importingNow, setImportingNow] = useState(false);
+
+  // Keep the native <dialog> in sync (Escape + backdrop close), same as GpuConfirmDialog/BetaLimitNotice.
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    if (!open && d.open) d.close();
+  }, [open]);
+
+  // Load a level of the tree. folderId omitted -> top level. Resets the confirm step on navigation.
+  const loadLevel = useCallback(
+    async (folderId?: string) => {
+      if (!connectionId) return;
+      setLoading(true);
+      setError("");
+      setConfirming(null);
+      try {
+        setLevel(await api.connectorBrowse(connectionId, folderId));
+      } catch (e: any) {
+        setError(e.message || "Could not load folders");
+        setLevel(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [connectionId]
+  );
+
+  // On open (or connection change) reset to the top level.
+  useEffect(() => {
+    if (!open || !connectionId) return;
+    setStack([]);
+    loadLevel();
+  }, [open, connectionId, loadLevel]);
+
+  // Drill into a folder: push it on the stack and load its children.
+  function drillInto(folder: BrowseFolder) {
+    setStack((s) => [...s, folder]);
+    loadLevel(folder.id);
+  }
+  // Jump to a breadcrumb: truncate the stack to that depth and reload. depth 0 = root.
+  function jumpTo(depth: number) {
+    const next = stack.slice(0, depth);
+    setStack(next);
+    loadLevel(next.length ? next[next.length - 1].id : undefined);
+  }
+
+  // The folder the "Import this folder" button imports: the current one (top of stack), or a virtual
+  // root when we're at the top level (backend imports the whole connection from an empty folder_id).
+  const current: BrowseFolder =
+    stack.length > 0
+      ? stack[stack.length - 1]
+      : { id: "", name: level?.path_hint || providerName || "root" };
+
+  async function confirmImport() {
+    if (!confirming) return;
+    setImportingNow(true);
+    onImport(confirming);
+    // The parent closes the modal and takes over the progress line; reset local state for next open.
+    setImportingNow(false);
+    setConfirming(null);
+  }
+
+  return (
+    <dialog ref={ref} data-theme="engram" className="modal" data-testid="folder-picker" onClose={onClose}>
+      <div className="modal-box max-w-lg border border-slate-800 bg-slate-900 text-slate-100">
+        <h3 className="text-lg font-semibold">Choose a folder in {providerName}</h3>
+
+        {/* Breadcrumb from path_hint + the visited-folder stack. Click a crumb to jump back up. */}
+        <nav data-testid="picker-breadcrumb" className="mt-2 flex flex-wrap items-center gap-1 text-xs text-slate-400">
+          <button type="button" className="hover:text-slate-200" onClick={() => jumpTo(0)}>
+            {providerName || "Top"}
+          </button>
+          {stack.map((f, i) => (
+            <span key={f.id} className="flex items-center gap-1">
+              <span className="text-slate-600">/</span>
+              <button type="button" className="hover:text-slate-200" onClick={() => jumpTo(i + 1)}>
+                {f.name}
+              </button>
+            </span>
+          ))}
+        </nav>
+        {level?.path_hint && (
+          <p className="mt-1 truncate text-[11px] text-slate-500" title={level.path_hint}>
+            {level.path_hint}
+          </p>
+        )}
+
+        {/* Folder list. Click a row to drill in. */}
+        <div className="mt-3 max-h-64 overflow-y-auto rounded-lg border border-slate-800" data-testid="picker-list">
+          {loading ? (
+            <p className="px-3 py-6 text-center text-sm text-slate-400">Loading…</p>
+          ) : error ? (
+            <p className="px-3 py-6 text-center text-sm text-red-400">{error}</p>
+          ) : level && level.folders.length > 0 ? (
+            <ul className="divide-y divide-slate-800 text-sm">
+              {level.folders.map((f) => (
+                <li key={f.id}>
+                  <button
+                    type="button"
+                    onClick={() => drillInto(f)}
+                    data-testid={`picker-folder-${f.id}`}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-800/60"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 text-slate-500">
+                      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" strokeLinejoin="round" />
+                    </svg>
+                    <span className="truncate">{f.name}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="px-3 py-6 text-center text-sm text-slate-500">No folders here.</p>
+          )}
+        </div>
+
+        {/* Supported-file count for the current folder. */}
+        {level && !loading && !error && (
+          <p className="mt-2 text-xs text-slate-400" data-testid="picker-count">
+            {level.supported_files} supported file{level.supported_files === 1 ? "" : "s"} here
+          </p>
+        )}
+
+        {/* In-modal confirm before importing. */}
+        {confirming && (
+          <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-slate-300" data-testid="picker-confirm">
+            Import &lsquo;{confirming.name}&rsquo; — supported files in this folder and its subfolders
+            will be added to your document base.
+          </div>
+        )}
+
+        <div className="modal-action">
+          <Button type="button" variant="outline" onClick={onClose}>
+            {confirming ? "Cancel" : "Close"}
+          </Button>
+          {confirming ? (
+            <Button type="button" variant="default" onClick={confirmImport} disabled={importingNow} data-testid="picker-confirm-import">
+              {importingNow ? "Starting…" : "Import"}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="default"
+              onClick={() => setConfirming(current)}
+              disabled={loading || !!error}
+              data-testid="picker-import"
+            >
+              Import this folder
+            </Button>
+          )}
+        </div>
+      </div>
+      {/* Backdrop click closes. */}
+      <form method="dialog" className="modal-backdrop">
+        <button aria-label="Close" onClick={onClose}>
+          close
+        </button>
+      </form>
+    </dialog>
   );
 }
 
