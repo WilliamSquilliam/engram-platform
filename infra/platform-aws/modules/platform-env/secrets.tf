@@ -24,6 +24,14 @@ resource "random_password" "internal" {
   length  = 48
   special = false
 }
+# The seeded operator login (registration is off in prod/UAT — without this nobody
+# can sign in). Retrieve with:
+#   aws secretsmanager get-secret-value --secret-id <env>-engram/BOOTSTRAP_ADMIN_PASSWORD \
+#     --query SecretString --output text --profile Engram-Dynamics
+resource "random_password" "bootstrap_admin" {
+  length  = 20
+  special = false
+}
 
 locals {
   database_url = "postgresql+psycopg://engram:${random_password.db.result}@${aws_db_instance.main.address}:5432/engram"
@@ -32,11 +40,12 @@ locals {
   # ML_AUTH_TOKEN comes from the serving unit (both planes share one bearer); the
   # rest are generated per env. Google secret is added conditionally below.
   base_secret_values = {
-    DATABASE_URL       = local.database_url
-    JWT_SECRET         = random_password.jwt.result
-    SESSION_SECRET     = random_password.session.result
-    INTERNAL_API_TOKEN = random_password.internal.result
-    ML_AUTH_TOKEN      = local.ml_auth_token
+    DATABASE_URL             = local.database_url
+    JWT_SECRET               = random_password.jwt.result
+    SESSION_SECRET           = random_password.session.result
+    INTERNAL_API_TOKEN       = random_password.internal.result
+    ML_AUTH_TOKEN            = local.ml_auth_token
+    BOOTSTRAP_ADMIN_PASSWORD = random_password.bootstrap_admin.result
   }
 
   google_secret_values = var.google_client_secret != "" ? {

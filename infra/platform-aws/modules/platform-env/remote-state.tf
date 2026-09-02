@@ -15,7 +15,9 @@ data "terraform_remote_state" "serving" {
   config = {
     bucket = var.tfstate_bucket
     key    = var.serving_state_key
-    region = var.region
+    # data-source creds resolve like backend creds: pin the profile
+    profile = "Engram-Dynamics"
+    region  = var.region
   }
 }
 

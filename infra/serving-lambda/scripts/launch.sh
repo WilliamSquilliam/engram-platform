@@ -28,7 +28,9 @@ require_api_key
 mkdirs
 
 INSTANCE_TYPE_FILTER="${INSTANCE_TYPE_FILTER:-b200}"     # primary target substring
-FALLBACK_FILTER="${FALLBACK_FILTER:-h100_sxm}"           # 2x H100 SXM fallback
+FALLBACK_FILTER="${FALLBACK_FILTER:-2x_h100_sxm}"        # 2x H100 SXM fallback — MUST be
+# the 2x (160GB): a 1x H100 (80GB) cannot hold Command A+ W4A4 (~120GB weights);
+# an under-matched filter launched exactly that once (caught + terminated).
 FS_NAME="${FS_NAME:-engram-fs}"                          # persistent filesystem (region-bound)
 INSTANCE_NAME="${INSTANCE_NAME:-engram-serving}"
 

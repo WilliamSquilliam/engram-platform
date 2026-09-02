@@ -9,7 +9,9 @@ data "terraform_remote_state" "common" {
   config = {
     bucket = var.tfstate_bucket
     key    = "platform-aws/common.tfstate"
-    region = var.region
+    # data-source creds resolve like backend creds: pin the profile
+    profile = "Engram-Dynamics"
+    region  = var.region
   }
 }
 

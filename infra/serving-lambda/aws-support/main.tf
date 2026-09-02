@@ -82,7 +82,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "carts" {
 resource "aws_iam_user" "serving" {
   name = "engram-lambda-serving"
   path = "/serving/"
-  tags = { Purpose = "Lambda serving box cart-store access (bucket-scoped)" }
+  # IAM tag values reject parentheses — keep to letters/spaces/dashes.
+  tags = { Purpose = "Lambda serving box cart-store access - bucket-scoped" }
 }
 
 resource "aws_iam_user_policy" "cart_store" {
