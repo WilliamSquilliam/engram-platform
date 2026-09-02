@@ -101,7 +101,10 @@ cat > "$STAGE/serving.env" <<ENV
 CARTRIDGES_MODEL=$CARTRIDGES_MODEL
 VLLM_TP=$VLLM_TP
 VLLM_MAX_MODEL_LEN=$CONTEXT_TOKENS
-VLLM_GPU_MEM_UTIL=0.90
+# 0.85, NOT 0.90: each cart load/scatter needs a ~2GB-per-GPU transient fp32 decode
+# buffer OUTSIDE the vLLM pool. At 0.90 only ~1GB/GPU was free — cart loads OOM'd and
+# the connector degraded requests to blank KV (found live on the 2x H100 bench run).
+VLLM_GPU_MEM_UTIL=0.85
 VLLM_TORCH_DTYPE=auto
 # --- ML-plane shared-token auth (enforced on every route except /health) ---
 ML_AUTH_TOKEN=$ML_AUTH_TOKEN

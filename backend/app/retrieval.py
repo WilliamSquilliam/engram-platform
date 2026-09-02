@@ -199,16 +199,69 @@ def _lexical_ranking(query: str, doc_ids: list[str], texts: list[str]) -> list[s
 # --------------------------------------------------------------------------- per-corpus index cache
 class _CorpusIndex:
     """A built hybrid index for one corpus: the ordered doc_ids, their index texts (filename +
-    description + extracted text), the per-id served text, and the invalidation signature it was
-    built under. Rebuilt when the signature changes (see _corpus_index)."""
+    description + extracted text), the per-id served text, the invalidation signature it was
+    built under — and the BUILT ranking artifacts (bm25 index + normalized doc embeddings).
 
-    __slots__ = ("doc_ids", "index_texts", "texts", "signature")
+    The artifacts are built HERE, once per (re)build, because the per-query path used to
+    re-tokenize+re-index bm25 AND re-embed every corpus document on every query — ~9s/query
+    measured live on a 13-doc corpus (minutes at real corpus sizes), all on control-plane CPU.
+    A query now costs one query-tokenize + one query-embed + ranking math. Rebuilds when the
+    signature changes (see _corpus_index)."""
+
+    __slots__ = ("doc_ids", "index_texts", "texts", "signature", "bm25", "doc_vecs")
 
     def __init__(self, doc_ids, index_texts, texts, signature):
         self.doc_ids = doc_ids
         self.index_texts = index_texts
         self.texts = texts
         self.signature = signature
+        self.bm25 = None
+        self.doc_vecs = None
+        if doc_ids:
+            import bm25s
+            self.bm25 = bm25s.BM25()
+            self.bm25.index(bm25s.tokenize(index_texts, stopwords="en", show_progress=False),
+                            show_progress=False)
+            embedder = _dense_embedder()
+            if embedder is not None:
+                try:
+                    import numpy as np
+                    v = np.array(list(embedder.embed(index_texts)), dtype=np.float32)
+                    self.doc_vecs = v / (np.linalg.norm(v, axis=1, keepdims=True) + 1e-12)
+                except Exception as exc:  # noqa: BLE001 — dense degrades, lexical still works
+                    logger.warning("dense index build failed for this corpus (lexical-only): %s", exc)
+
+
+def _lexical_rank_cached(query: str, idx: "_CorpusIndex") -> list[str]:
+    """Query-side-only bm25 ranking against the index's prebuilt bm25 artifacts. Same output
+    contract as _lexical_ranking (full ranked list, dropped docs appended in doc_id order)."""
+    import bm25s
+    q = bm25s.tokenize(query, stopwords="en", show_progress=False)
+    order, _scores = idx.bm25.retrieve(q, k=len(idx.doc_ids), show_progress=False)
+    ranked = [idx.doc_ids[i] for i in order[0]]
+    seen = set(ranked)
+    ranked += sorted(d for d in idx.doc_ids if d not in seen)
+    return ranked
+
+
+def _dense_rank_cached(query: str, idx: "_CorpusIndex") -> list[str] | None:
+    """Query-side-only dense ranking against the index's prebuilt normalized doc embeddings; only
+    the QUERY is embedded per call. None (fuse lexical-only) when dense is off/unavailable."""
+    if idx.doc_vecs is None:
+        return None
+    embedder = _dense_embedder()
+    if embedder is None:
+        return None
+    try:
+        import numpy as np
+        q = np.array(list(embedder.embed([query]))[0], dtype=np.float32)
+        q /= (np.linalg.norm(q) + 1e-12)
+        sims = idx.doc_vecs @ q
+        order = sorted(range(len(idx.doc_ids)), key=lambda i: (-float(sims[i]), idx.doc_ids[i]))
+        return [idx.doc_ids[i] for i in order]
+    except Exception as exc:  # noqa: BLE001 — degrade to lexical-only this query, never raise
+        logger.warning("dense ranking failed this query, using lexical-only: %s", exc)
+        return None
 
 
 _index_cache: dict[str, _CorpusIndex] = {}
@@ -276,8 +329,10 @@ def _hybrid_rank(corpus_id: str, tenant_id: str, question: str, k: int) -> tuple
     idx = _corpus_index(corpus_id, tenant_id)
     if not idx.doc_ids:
         return [], {}
-    lexical = _lexical_ranking(question, idx.doc_ids, idx.index_texts)
-    dense = _dense_ranking(question, idx.doc_ids, idx.index_texts)
+    # Cached-artifact ranking: only the QUERY is tokenized/embedded here — the corpus-side bm25
+    # index and doc embeddings were built once with the index (see _CorpusIndex).
+    lexical = _lexical_rank_cached(question, idx)
+    dense = _dense_rank_cached(question, idx)
     ranked_lists = [lexical] if dense is None else [lexical, dense]
     return rrf_fuse(ranked_lists, k), idx.texts
 

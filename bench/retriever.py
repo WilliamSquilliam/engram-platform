@@ -135,15 +135,53 @@ class HybridRetriever:
         self._by_id = dict(zip(self.doc_ids, self.texts, strict=True))
         self.dense = dense
         self.cache_dir = cache_dir
+        # BUILD-ONCE, QUERY-MANY: the first sweep re-embedded every corpus doc and re-built the
+        # bm25 index PER QUERY (~9s/query on this corpus) — it serialized the closed loop and
+        # measured the retriever, not the serving. Corpus-side work happens here, once; a query
+        # costs one query-tokenize + one query-embed + ranking math.
+        import bm25s
+        self._bm25 = bm25s.BM25()
+        self._bm25.index(bm25s.tokenize(self.texts, stopwords="en", show_progress=False),
+                         show_progress=False)
+        self._doc_vecs = None
+        if dense:
+            embedder = _dense_embedder(cache_dir)
+            if embedder is not None:
+                import numpy as np
+                v = np.array(list(embedder.embed(self.texts)), dtype=np.float32)
+                self._doc_vecs = v / (np.linalg.norm(v, axis=1, keepdims=True) + 1e-12)
+
+    def _lexical(self, question: str) -> list[str]:
+        import bm25s
+        q = bm25s.tokenize(question, stopwords="en", show_progress=False)
+        idx, _ = self._bm25.retrieve(q, k=len(self.doc_ids), show_progress=False)
+        ranked = [self.doc_ids[i] for i in idx[0]]
+        seen = set(ranked)
+        return ranked + sorted(d for d in self.doc_ids if d not in seen)
+
+    def _dense(self, question: str) -> list[str] | None:
+        if self._doc_vecs is None:
+            return None
+        embedder = _dense_embedder(self.cache_dir)
+        if embedder is None:
+            return None
+        try:
+            import numpy as np
+            q = np.array(list(embedder.embed([question]))[0], dtype=np.float32)
+            q /= (np.linalg.norm(q) + 1e-12)
+            sims = self._doc_vecs @ q
+            order = sorted(range(len(self.doc_ids)), key=lambda i: (-float(sims[i]), self.doc_ids[i]))
+            return [self.doc_ids[i] for i in order]
+        except Exception as exc:  # noqa: BLE001 — degrade to lexical-only this query, as prod does
+            logger.warning("dense ranking failed this query, using lexical-only: %s", exc)
+            return None
 
     def retrieve(self, question: str, k: int) -> list[str]:
-        """Top-k doc_ids for `question` (fused bm25s + dense via RRF). Parity with
-        retrieval._hybrid_rank -> rrf_fuse."""
+        """Top-k doc_ids for `question` (fused bm25s + dense via RRF), against the prebuilt index."""
         if not self.doc_ids:
             return []
-        lexical = lexical_ranking(question, self.doc_ids, self.texts)
-        dense = dense_ranking(question, self.doc_ids, self.texts, self.cache_dir) \
-            if self.dense else None
+        lexical = self._lexical(question)
+        dense = self._dense(question) if self.dense else None
         ranked_lists = [lexical] if dense is None else [lexical, dense]
         return rrf_fuse(ranked_lists, k)
 
