@@ -13,9 +13,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from .. import config, measurements, ml_client, retrieval
+from .. import config, limits, measurements, ml_client, retrieval, usage
 from ..deps import get_current_user, get_db
-from ..models import Corpus, User
+from ..models import Corpus, Tenant, User
 from ..ratelimit import limiter
 from ..schemas import ChatReq, ChatResp
 from ..storage import storage
@@ -23,9 +23,19 @@ from ..storage import storage
 router = APIRouter(tags=["chat"])
 
 
-def _answer(corpus: Corpus, req: ChatReq) -> ChatResp:
+def _enforce_query_limit(db: Session, corpus: Corpus) -> None:
+    """Beta monthly-query limit (invisible until hit): 429 BEFORE the engine is called if this
+    workspace has already reached its cap for the current month. Scoped to the corpus's owning tenant
+    (the billing/attribution key). No-op when the cap is 0 (unlimited)."""
+    tenant = db.get(Tenant, corpus.tenant_id)
+    if tenant is not None:
+        limits.check_query_limit(tenant, usage.tenant_query_count_this_month(db, corpus.tenant_id))
+
+
+def _answer(corpus: Corpus, req: ChatReq, db: Session) -> ChatResp:
     if corpus.status != "ready":
         raise HTTPException(400, f"Document base not ready (status={corpus.status})")
+    _enforce_query_limit(db, corpus)
     if config.INFERENCE_BACKEND == "vllm":
         # Resident-KV serving: control plane retrieves the cart doc_ids, the Inference Service serves
         # them (no per-query document prefill). Retrieval lives here (C2 split), not on the GPU.
@@ -70,7 +80,7 @@ def chat(request: Request, corpus_id: str, req: ChatReq, user: User = Depends(ge
     corpus = db.get(Corpus, corpus_id)
     if corpus is None or corpus.tenant_id != user.tenant_id:
         raise HTTPException(404, "Document base not found")
-    return _answer(corpus, req)
+    return _answer(corpus, req, db)
 
 
 # --- Streaming chat (SSE) -------------------------------------------------------------------------
@@ -119,6 +129,8 @@ def chat_stream(
         raise HTTPException(404, "Document base not found")
     if corpus.status != "ready" or config.INFERENCE_BACKEND != "vllm":
         raise HTTPException(400, "streaming chat needs a ready document base on the vLLM backend")
+    # Beta monthly-query limit, BEFORE any retrieval / GPU work (same gate as the non-stream path).
+    _enforce_query_limit(db, corpus)
     history = [m.model_dump() for m in req.history]
 
     # Resolve doc_ids ONCE. A follow-up turn echoes the first turn's doc_ids so retrieval is skipped
@@ -229,4 +241,4 @@ def mcp_query(
     if (corpus is None or not corpus.mcp_token
             or not secrets.compare_digest(corpus.mcp_token, x_mcp_token or "")):
         raise HTTPException(401, "Invalid MCP token")
-    return _answer(corpus, req)
+    return _answer(corpus, req, db)

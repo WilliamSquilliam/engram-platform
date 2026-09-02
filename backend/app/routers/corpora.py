@@ -4,11 +4,11 @@ import logging
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from .. import ml_client
+from .. import limits, ml_client, usage
 from ..audit import record_event
 from ..config import MAX_REQUEST_MB, MAX_UPLOAD_MB
 from ..deps import get_current_user, get_db
-from ..models import Corpus, Document, User
+from ..models import Corpus, Document, Tenant, User
 from ..parsing import SUPPORTED_EXTS, extract_text
 from ..retrieval import cart_id_for, invalidate_index
 from ..schemas import CorpusCreateReq, CorpusResp, DocumentResp
@@ -172,6 +172,15 @@ async def upload_documents(
     db: Session = Depends(get_db),
 ):
     corpus = get_owned_corpus(db, user, corpus_id)
+    # Beta document limit (invisible until hit): reject BEFORE saving anything if this workspace's
+    # document count + the incoming files would cross the cap, so a request that would exceed it is
+    # rejected whole (never a partial upload). Counted per-workspace (across all the tenant's corpora);
+    # incoming is len(files) — an upper bound (empties are skipped below), so we never let a request past.
+    tenant = db.get(Tenant, user.tenant_id)
+    if tenant is not None:
+        limits.check_document_limit(
+            tenant, usage.tenant_document_count(db, user.tenant_id), incoming=len(files)
+        )
     created = []
     max_file = MAX_UPLOAD_MB * 1024 * 1024
     max_total = MAX_REQUEST_MB * 1024 * 1024

@@ -9,9 +9,8 @@ import datetime
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from .. import pricing, usage
 from ..config import FRONTEND_URL, INVITE_EXPIRE_HOURS
@@ -26,6 +25,8 @@ from ..schemas import (
     PlatformTenantUsageResp,
     PlatformUsageResp,
     PlatformUsageTotalsResp,
+    TenantLimitsReq,
+    TenantLimitsResp,
 )
 from ..security import generate_token, hash_token
 
@@ -150,6 +151,33 @@ def list_tenants(
         )
         for t in tenants
     ]
+
+
+@router.patch("/tenants/{tenant_id}/limits", response_model=TenantLimitsResp)
+def update_tenant_limits(
+    tenant_id: str,
+    req: TenantLimitsReq,
+    _: User = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """The 'contact us to raise it' lever: set a tenant's per-workspace beta-limit overrides (documents
+    and/or monthly queries). Either field optional — only the ones present in the body are updated;
+    null clears an override (fall back to the config default); 0 means unlimited. Gated by
+    require_platform_admin (a tenant admin 403s — this is a cross-tenant control)."""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
+    fields = req.model_dump(exclude_unset=True)
+    if "max_docs_override" in fields:
+        tenant.max_docs_override = fields["max_docs_override"]
+    if "max_queries_override" in fields:
+        tenant.max_queries_override = fields["max_queries_override"]
+    db.commit()
+    return TenantLimitsResp(
+        tenant_id=tenant.id,
+        max_docs_override=tenant.max_docs_override,
+        max_queries_override=tenant.max_queries_override,
+    )
 
 
 @router.get("/usage", response_model=PlatformUsageResp)
