@@ -364,11 +364,23 @@ def _chat_ids(tok, user_text: str, history: list | None = None) -> list[int]:
         if m.get("role") in ("user", "assistant") and m.get("content"):
             msgs.append({"role": m["role"], "content": str(m["content"])})
     msgs.append({"role": "user", "content": user_text})
+    # The reasoning-control kwarg varies by model family and a wrong one is SILENTLY ignored (jinja just
+    # sees an unused variable): Command A+'s template ignores enable_thinking and ends the
+    # generation prompt with <|START_THINKING|> — every answer was the model's thinking
+    # stream ("The need to answer: ...") burning the whole token budget (found live on the
+    # bench). Its real control is reasoning=False, which renders a pre-closed
+    # <|START_THINKING|><|END_THINKING|> block so generation goes straight to the answer.
+    # Pass BOTH knobs (each family reads its own, ignores the other); fall back for
+    # templates that reject unexpected kwargs outright.
     try:
         out = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
-                                      enable_thinking=False)
-    except TypeError:  # template without the enable_thinking kwarg
-        out = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True)
+                                      reasoning=False, enable_thinking=False)
+    except TypeError:  # template that rejects unknown kwargs
+        try:
+            out = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
+                                          enable_thinking=False)
+        except TypeError:
+            out = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True)
     # transformers 4.x returns list[int]; 5.x returns a BatchEncoding (and some paths nest
     # a batch dim). Normalize to a flat list — every caller concatenates with plain lists,
     # and on the vLLM 0.26 stack (transformers 5.14 in the SERVE env) the raw return would
