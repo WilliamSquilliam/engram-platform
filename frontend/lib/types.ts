@@ -55,6 +55,44 @@ export interface ConnectorsResponse {
   connectors: Connector[];
 }
 
+// An external-source connector's provider id (as used in the connector routes).
+export type ConnectorProvider = "google_drive" | "sharepoint" | string;
+
+// A live connection for this workspace (GET /connectors/connections). One row per
+// account the operator has linked, newest usable for the auto-open-after-OAuth flow.
+export interface ConnectorConnection {
+  id: string;
+  provider: ConnectorProvider;
+  account_label: string;
+  created_at: string;
+}
+
+// A folder listed while browsing a connection (GET .../browse). `id` is an opaque
+// string — the UI never parses it, it just passes it back to drill in or import.
+export interface BrowseFolder {
+  id: string;
+  name: string;
+}
+// One level of a connection's folder tree. `path_hint` is a breadcrumb the backend
+// writes (e.g. "My Drive / Reports"); `supported_files` counts importable files here.
+export interface BrowseResult {
+  folders: BrowseFolder[];
+  supported_files: number;
+  path_hint: string;
+}
+
+// Background import lifecycle (GET /corpora/{id}/import-status). "limited" means the
+// beta document cap was reached mid-import — everything imported so far is KEPT.
+export type ImportState = "none" | "running" | "done" | "failed" | "limited";
+export interface ImportStatus {
+  state: ImportState;
+  imported: number;
+  skipped: number;
+  failed: number;
+  folder_name: string;
+  error: string | null;
+}
+
 // The onboarding "choose model" step (GET /models). Tiers with available=false render but are
 // not selectable — "coming soon".
 export interface ModelTier {

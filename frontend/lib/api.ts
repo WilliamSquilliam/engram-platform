@@ -6,9 +6,13 @@ import type {
   ApproveAccessResponse,
   AuthConfig,
   BillingStatus,
+  BrowseResult,
   ChatResponse,
   CompareResult,
+  ConnectorConnection,
+  ConnectorProvider,
   ConnectorsResponse,
+  ImportStatus,
   Corpus,
   Document,
   GpuActionResponse,
@@ -267,6 +271,48 @@ export const api = {
   // Document-source connectors. `filesystem` is the built-in upload; external
   // connectors report available=false until their OAuth apps are configured.
   connectors: () => req<ConnectorsResponse>("/connectors"),
+
+  // --- External-source connectors (Google Drive / SharePoint) -----------------------------------
+  // Start the OAuth handshake for a provider. Returns the provider consent URL the browser then
+  // full-page-redirects to; the provider redirects back to the setup page with ?connected=/?connector_error=.
+  connectorAuthorize: (provider: ConnectorProvider, corpusId: string) =>
+    req<{ url: string }>(`/connectors/${provider}/authorize?corpus_id=${encodeURIComponent(corpusId)}`),
+  // This workspace's live connections (one per linked account). Used to skip OAuth when a connection
+  // for the clicked provider already exists, and to find the newest one after the OAuth return.
+  connectorConnections: () => req<ConnectorConnection[]>("/connectors/connections"),
+  // List folders one level down inside a connection. Omit folderId for the top level (SharePoint's
+  // top level lists sites as folders — intended). ids are opaque; just pass them back to drill in.
+  connectorBrowse: (connectionId: string, folderId?: string) =>
+    req<BrowseResult>(
+      `/connectors/connections/${connectionId}/browse` +
+        (folderId ? `?folder_id=${encodeURIComponent(folderId)}` : "")
+    ),
+  // Start a background import of a picked folder (its supported files, recursively). 200 = started;
+  // 409 = one is already running for this document base. The 409 is returned as a structured result
+  // (not thrown) so the caller can render its own exact copy regardless of the server's detail string.
+  corpusImport: async (
+    corpusId: string,
+    body: { connection_id: string; folder_id: string; folder_name: string }
+  ): Promise<{ started: true } | { already_running: true }> => {
+    const token = getToken();
+    const res = await fetch(`${API_URL}/corpora/${corpusId}/import`, {
+      method: "POST",
+      headers: { ...JSON_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401) {
+      handleUnauthorized();
+      throw new Error("Session expired");
+    }
+    if (res.status === 409) return { already_running: true };
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.detail || `import failed (${res.status})`);
+    }
+    return { started: true };
+  },
+  // Poll the in-flight/terminal state of a folder import (state + running counts + folder name).
+  importStatus: (corpusId: string) => req<ImportStatus>(`/corpora/${corpusId}/import-status`),
   uploadDocuments: (id: string, files: File[]) => {
     const fd = new FormData();
     files.forEach((f) => {
