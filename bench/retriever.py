@@ -132,7 +132,7 @@ class HybridRetriever:
         # prod prepends those to the INDEX text only, never to the served/context text).
         self.doc_ids = list(doc_ids)
         self.texts = list(texts)
-        self._by_id = dict(zip(self.doc_ids, self.texts))
+        self._by_id = dict(zip(self.doc_ids, self.texts, strict=True))
         self.dense = dense
         self.cache_dir = cache_dir
 

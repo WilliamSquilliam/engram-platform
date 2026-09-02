@@ -120,7 +120,7 @@ def build_questions(stems: list[str]) -> None:
         print("!! ACTION REQUIRED: hand-write questions for the docs below (BLANK template slots).")
         print("!! Read each paper, add 2-3 clearly-answerable factual questions per doc, and set")
         print("!! expect_substring to a short string that MUST appear in a correct answer.")
-        print("!! Docs still needing questions ({} of {}):".format(len(template_stems), len(stems)))
+        print(f"!! Docs still needing questions ({len(template_stems)} of {len(stems)}):")
         for s in template_stems:
             print(f"!!    - {s}")
         print("=" * 78 + "\n")
