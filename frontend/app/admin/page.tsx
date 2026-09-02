@@ -16,8 +16,8 @@ import {
   YAxis,
 } from "recharts";
 import { api, getToken } from "@/lib/api";
-import type { AdminBilling, AdminUsage, User } from "@/lib/types";
-import { Card, CardBody, CardHeader, Button, ProgressBar } from "@/components/ui";
+import type { AdminBilling, AdminUsage, BillingStatus, User } from "@/lib/types";
+import { Card, CardBody, CardHeader, Button } from "@/components/ui";
 
 // --- formatters (single place so the same number always renders the same way) -------------------
 const num = (x: number | null | undefined) =>
@@ -55,6 +55,11 @@ export default function AdminDashboardPage() {
   const [me, setMe] = useState<User | null>(null);
   const [usage, setUsage] = useState<AdminUsage | null>(null);
   const [billing, setBilling] = useState<AdminBilling | null>(null);
+  // Dark-launch billing flag. Kept separate from the dashboard load: if /billing/status is missing
+  // or errors, the page still renders — we just stay in the "coming soon" posture (billingStatus null).
+  const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [portalError, setPortalError] = useState("");
   const [gateChecked, setGateChecked] = useState(false);
   const [error, setError] = useState("");
 
@@ -67,6 +72,26 @@ export default function AdminDashboardPage() {
       setError("");
     } catch (err: any) {
       setError(err.message || "Couldn't load your dashboard.");
+    }
+    // Billing status is best-effort and non-blocking: a failure just leaves the "coming soon" state,
+    // which is exactly the dark-launch default. Never let it break the dashboard.
+    try {
+      setBillingStatus(await api.billingStatus());
+    } catch {
+      setBillingStatus(null);
+    }
+  }, []);
+
+  // Open the Stripe customer portal. Only reachable when billing is enabled (button is gated).
+  const openPortal = useCallback(async () => {
+    setPortalBusy(true);
+    setPortalError("");
+    try {
+      const { url } = await api.billingPortal();
+      window.location.assign(url);
+    } catch (err: any) {
+      setPortalError(err.message || "Couldn't open billing right now. Please try again.");
+      setPortalBusy(false);
     }
   }, []);
 
@@ -97,14 +122,11 @@ export default function AdminDashboardPage() {
   if (!gateChecked) return <div className="p-8 text-slate-400">Loading…</div>;
 
   const ccy = billing?.currency || "USD";
-  // Usage-vs-limits: pair each limit with its usage; a null/0 limit renders as "unlimited".
-  const limitRows = billing
-    ? Object.keys(billing.limits).map((k) => ({
-        key: k,
-        used: billing.usage[k] ?? 0,
-        limit: billing.limits[k],
-      }))
-    : [];
+  // The live two-meter rate card (memory per doc/month + inference per 1k queries; onboarding free).
+  // Comes from /admin/billing's rate_card — the old per_gb_month storage rate is gone.
+  const rc = billing?.rate_card;
+  // Beta caps stay invisible until hit, so we deliberately do NOT render a usage-vs-limits section
+  // here (no bars, no limit numbers). The estimated cost below is the single billing figure we show.
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-8">
@@ -257,30 +279,55 @@ export default function AdminDashboardPage() {
             <Stat label="Currency" value={ccy} />
           </div>
 
-          {limitRows.length > 0 && (
-            <div className="space-y-3" data-testid="billing-limits">
-              <div className="text-xs uppercase tracking-wider text-slate-500">Usage vs limits</div>
-              {limitRows.map((r) => {
-                const unlimited = !r.limit || r.limit <= 0;
-                const frac = unlimited ? 0 : Math.min(1, r.used / r.limit);
-                return (
-                  <div key={r.key}>
-                    <div className="mb-1 flex items-center justify-between text-sm">
-                      <span className="capitalize text-slate-300">{r.key.replace(/_/g, " ")}</span>
-                      <span className="tabular-nums text-slate-400">
-                        {num(r.used)} {unlimited ? "/ unlimited" : `/ ${num(r.limit)}`}
-                      </span>
-                    </div>
-                    {!unlimited && <ProgressBar value={frac} />}
+          {/* Two-meter rate card: memory (per document per month) + inference (per 1,000 questions),
+              with onboarding called out as free. Single source of truth for what things cost. */}
+          {rc && (
+            <div className="space-y-3" data-testid="rate-card">
+              <div className="text-xs uppercase tracking-wider text-slate-500">What you pay for</div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                  <div className="text-sm font-medium text-slate-200">Memory</div>
+                  <div className="mt-1 text-lg font-semibold tabular-nums text-slate-100">
+                    {money(rc.per_doc_month_usd, ccy)} per document per month
                   </div>
-                );
-              })}
+                  <div className="mt-1 text-xs text-slate-500">
+                    What it costs to keep your documents ready to answer questions.
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                  <div className="text-sm font-medium text-slate-200">Questions answered</div>
+                  <div className="mt-1 text-lg font-semibold tabular-nums text-slate-100">
+                    {money(rc.per_1k_queries_usd, ccy)} per 1,000 questions answered
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    You only pay for the questions your team actually asks.
+                  </div>
+                </div>
+              </div>
+              <p className="text-sm text-emerald-300" data-testid="onboarding-free">
+                Adding documents is free.
+              </p>
             </div>
           )}
 
-          <p className="text-xs text-slate-500">
-            Self-serve billing is on the way. For plan changes or invoices, reach out to your Engram contact.
-          </p>
+          {/* Billing management. Dark launch: until the backend flips `enabled` true, this looks
+              exactly as it did before — a "coming soon" posture with no button and no Stripe mention.
+              When enabled, a Manage billing button opens the Stripe customer portal. */}
+          {billingStatus?.enabled ? (
+            <div className="space-y-2" data-testid="billing-management">
+              <Button onClick={openPortal} disabled={portalBusy} data-testid="manage-billing">
+                {portalBusy ? "Opening…" : "Manage billing"}
+              </Button>
+              {portalError && <p className="text-sm text-red-400">{portalError}</p>}
+              <p className="text-xs text-slate-500">
+                Update your payment method, download invoices, and manage your plan.
+              </p>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500">
+              Self-serve billing is on the way. For plan changes or invoices, reach out to your Engram contact.
+            </p>
+          )}
         </CardBody>
       </Card>
 
