@@ -78,27 +78,40 @@ class ImportSizeExceeded(Exception):
 # Token lifecycle (shared): refresh via Authlib using the stored refresh token, re-encrypt the result.
 # --------------------------------------------------------------------------------------------------
 
+def _token_endpoint_and_client(conn: ConnectorConnection) -> tuple[str, str, str]:
+    """(token_url, client_id, client_secret) for the connection's provider. A plain OAuth2
+    refresh_token grant is a documented POST to the token endpoint — we do it directly (httpx) rather
+    than through Authlib's ASYNC Starlette client, because refresh runs in a SYNC background thread.
+    Raises 503 if the provider isn't configured."""
+    from .. import config
+    from ..oauth import ms_token_url
+
+    if conn.provider == "google_drive" and config.GDRIVE_ENABLED:
+        # Google's OAuth2 token endpoint is stable; no need to fetch the discovery doc for a refresh.
+        return ("https://oauth2.googleapis.com/token",
+                config.GDRIVE_CLIENT_ID, config.GDRIVE_CLIENT_SECRET)
+    if conn.provider == "sharepoint" and config.SHAREPOINT_ENABLED:
+        return (ms_token_url(), config.SHAREPOINT_CLIENT_ID, config.SHAREPOINT_CLIENT_SECRET)
+    raise HTTPException(503, "This source is not configured.")
+
+
 def _refresh_access_token(db: Session, conn: ConnectorConnection) -> str:
-    """Mint a fresh access token from the connection's refresh token (Authlib), persist the new
-    access token (encrypted) + expiry, and return the plaintext access token. Raises 503 if the
-    provider isn't configured, 401 if the refresh itself is rejected (revoked/expired grant)."""
-    from ..oauth import PROVIDERS, oauth, register_all
-
-    register_all()  # ensure the client is registered (creds may have been set after import)
-    spec = PROVIDERS.get(conn.provider)
-    if oauth is None or spec is None:
-        raise HTTPException(503, "This source is not configured.")
-    client = oauth.create_client(spec["client"])
-    if client is None:
-        raise HTTPException(503, "This source is not configured.")
-
+    """Mint a fresh access token from the connection's refresh token via a direct refresh_token grant,
+    persist the new access token (encrypted) + expiry, and return the plaintext access token. Raises
+    503 if the provider isn't configured, 401 if the refresh itself is rejected (revoked/expired
+    grant)."""
+    token_url, client_id, client_secret = _token_endpoint_and_client(conn)
     refresh_token = crypto.decrypt(conn.enc_refresh_token)  # may raise a clean 503 on a rotated key
-    metadata = client.load_server_metadata()  # token endpoint (Google via discovery; MS set explicitly)
-    token_url = metadata.get("token_endpoint") or client.access_token_url
     try:
-        new_token = client.fetch_access_token(
-            url=token_url, grant_type="refresh_token", refresh_token=refresh_token,
-        )
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as c:
+            r = c.post(token_url, data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            })
+            r.raise_for_status()
+            new_token = r.json()
     except Exception as exc:  # noqa: BLE001 — a rejected refresh is an auth failure, not a 500
         logger.warning("token refresh failed for connection %s (%s)", conn.id, conn.provider)
         raise HTTPException(401, "The connection to this source has expired — please reconnect.") from exc

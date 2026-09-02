@@ -67,6 +67,18 @@ limiter.enabled = False
 
 
 @pytest.fixture(autouse=True)
+def _reset_connector_crypto():
+    """The connector token-crypto layer caches its Fernet (keyed by CONNECTOR_ENC_KEY). A test that
+    rotates the key must not leak the cached one into the next test — clear the cache around every
+    test so each starts from the pinned conftest key."""
+    from app.connectors import crypto
+
+    crypto.reset()
+    yield
+    crypto.reset()
+
+
+@pytest.fixture(autouse=True)
 def serving_up_true(monkeypatch):
     """Pin serving.serving_up -> True for every test (mirrors the env-leak pinning above): the real
     probe would hit ML_SERVICE_URL/health, so without this the onboard tests would depend on a live

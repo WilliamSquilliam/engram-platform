@@ -447,22 +447,22 @@ def test_connectors_shape_and_default_gating(client, auth):
 
 
 def test_connector_needs_implementation_and_creds(client, auth, monkeypatch):
-    """Availability = IMPLEMENTED and creds. Creds alone must NOT light a connector up while its
-    runtime is a NotImplementedError scaffold (e2e finding: a configured Google OAuth client made
-    the UI offer an unimplemented connector). Both flags together flip it available."""
-    from app.connectors import google_drive
-
+    """Availability = IMPLEMENTED (now True for both OAuth connectors) AND creds AND the token
+    encryption key. config.GDRIVE_ENABLED already folds in CONNECTOR_ENC_KEY, so an off GDRIVE_ENABLED
+    (missing creds OR key) keeps the connector 'coming soon'; flipping it on makes it available."""
     headers, _ = auth
+    # No creds (conftest default) -> coming soon even though IMPLEMENTED is True.
+    monkeypatch.setattr(config, "GDRIVE_ENABLED", False)
+    body = client.get("/connectors", headers=headers).json()
+    by_id = {c["id"]: c for c in body["connectors"]}
+    assert by_id["google_drive"]["available"] is False
+
+    # Creds + enc key present (GDRIVE_ENABLED True) -> available.
     monkeypatch.setattr(config, "GDRIVE_ENABLED", True)
     body = client.get("/connectors", headers=headers).json()
     by_id = {c["id"]: c for c in body["connectors"]}
-    assert by_id["google_drive"]["available"] is False  # creds alone: still coming soon
-
-    monkeypatch.setattr(google_drive, "IMPLEMENTED", True)
-    body = client.get("/connectors", headers=headers).json()
-    by_id = {c["id"]: c for c in body["connectors"]}
-    assert by_id["google_drive"]["available"] is True   # implementation + creds
-    assert by_id["sharepoint"]["available"] is False    # still off
+    assert by_id["google_drive"]["available"] is True
+    assert by_id["sharepoint"]["available"] is False    # still off (no SharePoint creds)
 
 
 # --- tiny PDF generators (no reportlab; a couple of literal PDFs) ----------------------

@@ -129,4 +129,4 @@ def test_alembic_single_head():
     cfg = Config(str(backend_dir / "alembic.ini"))
     cfg.set_main_option("script_location", str(backend_dir / "alembic"))
     heads = ScriptDirectory.from_config(cfg).get_heads()
-    assert list(heads) == ["0012_tenant_billing"], heads
+    assert list(heads) == ["0013_connectors"], heads

@@ -106,6 +106,17 @@ async def authorize(
     return ConnectorAuthorizeResp(url=rv["url"])
 
 
+def _recover_state(request: Request, spec: dict) -> tuple[str | None, str | None]:
+    """Read the corpus_id + user_id we stashed in Authlib's signed-session state during authorize,
+    BEFORE authorize_access_token clears it. The framed data lives under _state_{client}_{state} in the
+    session (tamper-proof: the session cookie is signed). A forged state not in the session yields
+    nothing and the callback bails."""
+    state = request.query_params.get("state", "")
+    session_key = f"_state_{spec['client']}_{state}"
+    framed = (request.session.get(session_key) or {}).get("data") or {}
+    return framed.get("corpus_id"), framed.get("user_id")
+
+
 def _fail_redirect(provider: str) -> RedirectResponse:
     return RedirectResponse(f"{config.FRONTEND_URL}/document-base?connector_error={provider}")
 
@@ -121,14 +132,8 @@ async def callback(provider: str, request: Request, db: Session = Depends(get_db
     except HTTPException:
         return _fail_redirect(provider)
 
-    # Recover the state data (corpus_id + user_id) BEFORE authorize_access_token clears it. The state
-    # value is echoed back by the provider; its framed data lives in our signed session, so a forged
-    # state that isn't in the session yields nothing and we bail.
-    state = request.query_params.get("state", "")
-    session_key = f"_state_{spec['client']}_{state}"
-    framed = (request.session.get(session_key) or {}).get("data") or {}
-    corpus_id = framed.get("corpus_id")
-    user_id = framed.get("user_id")
+    # Recover the state data (corpus_id + user_id) BEFORE authorize_access_token clears it.
+    corpus_id, user_id = _recover_state(request, spec)
 
     try:
         token = await client.authorize_access_token(request)  # validates state, exchanges the code

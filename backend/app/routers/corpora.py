@@ -6,7 +6,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from .. import limits, ml_client, usage
+from .. import config, limits, ml_client, usage
 from ..audit import record_event
 from ..config import MAX_REQUEST_MB, MAX_UPLOAD_MB
 from ..connectors import providers
@@ -323,7 +323,8 @@ def _run_import(run_id: str, connection_id: str, folder_id: str, site_id: str | 
             db.commit()
             return
         tenant = db.get(Tenant, corpus.tenant_id)
-        max_bytes = MAX_UPLOAD_MB * 1024 * 1024
+        # Read the cap off config (not the import-time constant) so it honors an env/test override.
+        max_bytes = config.MAX_UPLOAD_MB * 1024 * 1024
         try:
             token = providers.access_token(db, conn)
             for rel_path, download in _walk_for(conn.provider, token, folder_id, site_id, max_bytes):
