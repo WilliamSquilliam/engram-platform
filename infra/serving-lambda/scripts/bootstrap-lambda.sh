@@ -96,6 +96,9 @@ mkdir -p /data/corpora
 chown -R "$RUN_USER":"$RUN_USER" /data
 if [ -d "$FS_ROOT" ]; then
   mkdir -p "$FS_ROOT/hf"
+  # seed-out runs as $RUN_USER; a root-owned hf/ makes every rsync write fail
+  # (exit 23, FS stays empty and every relaunch re-downloads ~123GB).
+  chown -R "$RUN_USER":"$RUN_USER" "$FS_ROOT/hf"
   log "persistent FS present at $FS_ROOT (weights seed target)"
 else
   log "WARN: persistent FS not mounted at $FS_ROOT — relaunches will re-download weights"
