@@ -16,7 +16,7 @@ import uuid
 import pytest
 from app import measurements
 from app.db import SessionLocal
-from app.models import Corpus, Document, Measurement, Tenant, User
+from app.models import Corpus, Document, Measurement, User
 
 # A measured head-to-head (mirrors test_measurements) so /admin/usage has a query signal to count.
 CART = {"latency_ms": 10.0, "ttft_ms": 4.0, "decode_tps": 40.0, "prompt_tokens": 8,
@@ -171,7 +171,10 @@ def test_admin_billing_shell(client, clean_measurements):
     assert b["usage"]["storage_gb"] == pytest.approx(4.0, abs=1e-6)
     # Estimated cost comes from the pricing rate card and is non-negative.
     assert b["estimated_cost_usd"] >= 0.0
-    assert set(b["rate_card"]) >= {"per_1k_queries_usd", "per_gb_month_usd", "per_onboarded_doc_usd"}
+    # Two-meter rate card: inference (per-1k-queries) + memory (per-doc-month); per_onboarded_doc kept
+    # for compat and is always 0.0 (onboarding is free). Storage is no longer a billed meter.
+    assert set(b["rate_card"]) >= {"per_1k_queries_usd", "per_doc_month_usd", "per_onboarded_doc_usd"}
+    assert b["rate_card"]["per_onboarded_doc_usd"] == 0.0
 
 
 def test_admin_billing_cost_matches_pricing_util(client, clean_measurements):
