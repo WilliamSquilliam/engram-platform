@@ -128,7 +128,13 @@ pip install -U pip wheel >/dev/null
 # this happened: engram-cartridge's torch<2.12 pin dragged torch under vllm 0.28's
 # torch==2.13). Installing vllm last makes its resolver the final word.
 log "installing the engram-cartridge wheel with [s3,build] extras"
-pip install "engram-cartridge[s3,build] @ file://$WHEEL"
+# --force-reinstall --no-deps: pip SKIPS a same-version wheel ("requirement already
+# satisfied"), which silently served stale code when a rebuild didn't bump the version
+# (found live: a placement fix never installed and a debug patch survived a provision).
+# --no-deps keeps the forced reinstall from churning the resolved env; the extras' deps
+# are installed by the requirements step + vllm below.
+pip install --force-reinstall --no-deps "engram-cartridge @ file://$WHEEL"
+pip install "engram-cartridge[s3,build] @ file://$WHEEL" >/dev/null 2>&1 || true  # extras deps only
 
 log "installing ml_service requirements (minus engram-cartridge — the wheel supplies it)"
 REQ="$APP_DIR/ml_service/requirements.txt"
