@@ -32,8 +32,19 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Host-header allow-list in prod (disabled when ALLOWED_HOSTS is unset or "*").
+# /health is EXEMPT: the ALB target-group health check sends the target's IP as the
+# Host header (not configurable on ELBv2), so enforcing the allowlist there fails
+# every new task's ELB health check and wedges deployments (the old task keeps
+# serving). /health returns no data a Host-header attack could influence.
 if config.IS_PROD and config.ALLOWED_HOSTS and "*" not in config.ALLOWED_HOSTS:
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
+    class _TrustedHostExceptHealth(TrustedHostMiddleware):
+        async def __call__(self, scope, receive, send):
+            if scope.get("type") == "http" and scope.get("path") == "/health":
+                await self.app(scope, receive, send)
+                return
+            await super().__call__(scope, receive, send)
+
+    app.add_middleware(_TrustedHostExceptHealth, allowed_hosts=config.ALLOWED_HOSTS)
 
 app.add_middleware(
     CORSMiddleware,
