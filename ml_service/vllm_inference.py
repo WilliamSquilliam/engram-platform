@@ -458,12 +458,40 @@ def _sampling(cart_ids, **kw):
     return SamplingParams(temperature=0.0, **kw)
 
 
+# Cohere text-fencing markers (Command A/A+ family). They are ADDED tokens, not special
+# tokens, so skip_special_tokens does NOT remove them and they leak into user-visible
+# answers ("<|START_TEXT|>The Levenshtein distance..." — found live on the bench box).
+_TEXT_MARKERS = ("<|START_TEXT|>", "<|END_TEXT|>", "<|START_RESPONSE|>", "<|END_RESPONSE|>",
+                 "<|START_THINKING|>", "<|END_THINKING|>")
+
+
+def _strip_markers(text: str) -> str:
+    """Remove model-family text-fencing markers from decoded output. Safe on cumulative stream
+    text too (pure substring removal, applied before delta diffing)."""
+    for m in _TEXT_MARKERS:
+        if m in text:
+            text = text.replace(m, "")
+    return text
+
+
 def _strip_think(text: str) -> str:
     """Defensively drop a leading <think>...</think> block (Qwen3 emits one if the template's
-    thinking switch is ignored)."""
+    thinking switch is ignored), then any family text-fencing markers."""
     if "<think>" in text and "</think>" in text:
         text = text.split("</think>", 1)[1]
-    return text.strip()
+    return _strip_markers(text).strip()
+
+
+def _stream_safe_len(text: str) -> int:
+    """How much of the (already marker-stripped) cumulative stream text is safe to emit NOW: a
+    marker can arrive SPLIT across engine ticks ("<|START_" then "TEXT|>"), so any suffix that is
+    a strict prefix of a marker is held back until the next tick resolves it (either into a full
+    marker, which _strip_markers removes, or into ordinary text, which then flows)."""
+    for m in _TEXT_MARKERS:
+        for plen in range(min(len(m) - 1, len(text)), 0, -1):
+            if text.endswith(m[:plen]):
+                return len(text) - plen
+    return len(text)
 
 
 def _verify_cart_binding(cart_id: str, model_ref: str | None) -> None:
@@ -744,12 +772,16 @@ async def _stream_generate(prompt_ids: list[int], cart_ids: list[str] | None, ma
                 _sampling(cart_ids, max_tokens=max_tokens,
                           logprobs=1 if want_conf else None), rid):
             final = out
-            text = out.outputs[0].text
-            if len(text) > sent:
+            # Strip family text-fencing markers from the CUMULATIVE text before diffing, and hold
+            # back any trailing partial marker until the next tick resolves it — otherwise the
+            # leading "<|START_TEXT|>" (or a split fragment of it) leaks into the first delta.
+            text = _strip_markers(out.outputs[0].text)
+            emit_to = _stream_safe_len(text)
+            if emit_to > sent:
                 if first is None:
                     first = time.perf_counter()
-                yield f"data: {_json.dumps({'delta': text[sent:]})}\n\n"
-                sent = len(text)
+                yield f"data: {_json.dumps({'delta': text[sent:emit_to]})}\n\n"
+                sent = emit_to
     finally:
         if cart_ids:
             reg.pop(rid)
