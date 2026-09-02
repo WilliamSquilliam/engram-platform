@@ -22,6 +22,7 @@ def list_model_tiers(user: User = Depends(get_current_user)) -> dict:
             {
                 "id": t.id,
                 "label": t.label,
+                "display_name": t.display_name,
                 "description": t.description,
                 "precision": t.precision,
                 "context_tokens": t.context_tokens,

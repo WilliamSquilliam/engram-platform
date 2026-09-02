@@ -49,6 +49,13 @@ const stepIndex = (s: OnboardingStep) => Math.max(0, STEP_ORDER.indexOf(s === "r
 // Poll the document list while any file is still parsing so rows transition
 // parsing -> parsed/failed without a manual refresh.
 const PARSE_POLL_MS = 2000;
+// Re-fetch the review estimate on this interval while the review step is open, so a fresh estimate
+// and the serving_up gate (Start onboarding re-enables when the GPU comes back) stay current.
+const REVIEW_POLL_MS = 15000;
+// Shown on the review step when the GPU onboard plane is down: Start onboarding is disabled but
+// nothing is lost, and it unlocks automatically once serving is back (the 15s poll flips the gate).
+const SERVING_OFFLINE_NOTE =
+  "The GPU is offline right now. Everything here is saved — Start onboarding unlocks the moment it is back.";
 
 export default function OnboardingWizard() {
   const { id } = useParams() as { id: string };
@@ -203,14 +210,34 @@ export default function OnboardingWizard() {
   }
 
   // ---- Step 4: review ----
+  // Continue-from-Model just moves the cursor; the estimate is fetched by the effect below, which
+  // also covers every OTHER way of entering review (resume at the "review" step, or the training-job
+  // callback bouncing back here on failure) — those used to leave the estimate null (all dashes).
   async function loadReview() {
     await goto("review");
-    try {
-      setEstimate(await api.estimate(id));
-    } catch (e: any) {
-      setNote(e.message || "Could not load estimate");
-    }
   }
+
+  // Fetch the estimate whenever the review step is active, and re-fetch on each entry (cheap, picks
+  // up new uploads). While ON review, poll every 15s so the estimate stays fresh AND the serving_up
+  // gate (Fix 2) lights the Start onboarding button back up the moment the GPU is reachable again.
+  useEffect(() => {
+    if (step !== "review") return;
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const est = await api.estimate(id);
+        if (alive) setEstimate(est);
+      } catch (e: any) {
+        if (alive) setNote(e.message || "Could not load estimate");
+      }
+    };
+    refresh();
+    const iv = setInterval(refresh, REVIEW_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [id, step]);
 
   // ---- Step 5: onboard ----
   async function startOnboard() {
@@ -224,6 +251,10 @@ export default function OnboardingWizard() {
         // is left at "review" server-side (nothing dispatched).
         setGated(true);
         setStep("onboarding");
+      } else if ("serving_offline" in res) {
+        // 503: the model is wired but the GPU plane went down between the poll and this click (a
+        // race). Nothing dispatched — stay on review; the note + the 15s poll's gate handle re-entry.
+        setNote(SERVING_OFFLINE_NOTE);
       } else {
         // Dispatched: a training run is now in flight. Show live progress.
         setStep("onboarding");
@@ -242,6 +273,9 @@ export default function OnboardingWizard() {
   const idx = stepIndex(step);
   const selectedTierObj = tiers.find((t) => t.id === selectedTier) || null;
   const canOnboard = docs.length > 0 && !!selectedTier;
+  // The GPU onboard plane is down (estimate says so): Start onboarding is gated until it's back. Only
+  // treat an ARRIVED estimate as down — while it's still loading (null) don't flash the gate.
+  const servingDown = estimate?.serving_up === false;
 
   return (
     <main className="mx-auto max-w-2xl p-8">
@@ -422,7 +456,9 @@ export default function OnboardingWizard() {
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium text-slate-100">{t.label}</span>
+                        {/* Prefer the public model name; when present the tier label moves into the
+                            small line below (e.g. "Best tier · <description>"). No name -> today's UI. */}
+                        <span className="font-medium text-slate-100">{t.display_name || t.label}</span>
                         {t.id === defaultTier && t.available && (
                           <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">Default</span>
                         )}
@@ -431,7 +467,7 @@ export default function OnboardingWizard() {
                         )}
                       </div>
                       <p className="mt-0.5 truncate text-xs text-slate-400">
-                        {t.description}
+                        {t.display_name ? `${t.label} tier · ${t.description}` : t.description}
                         {t.precision ? ` · ${t.precision}` : ""}
                         {t.context_tokens ? ` · ${t.context_tokens.toLocaleString()} ctx` : ""}
                       </p>
@@ -468,7 +504,11 @@ export default function OnboardingWizard() {
             <dl className="grid grid-cols-2 gap-3 text-sm" data-testid="review-summary">
               <Stat label="Documents" value={String(estimate?.n_documents ?? docs.length)} />
               <Stat label="Total size" value={fmtBytes(estimate?.total_bytes ?? docs.reduce((a, d) => a + d.size, 0))} />
-              <Stat label="Model" value={selectedTierObj?.label ?? selectedTier ?? "—"} />
+              <Stat
+                label="Model"
+                value={selectedTierObj?.display_name || selectedTierObj?.label || selectedTier || "—"}
+                sub={selectedTierObj?.description}
+              />
               <Stat
                 label="File types"
                 value={
@@ -480,10 +520,13 @@ export default function OnboardingWizard() {
               <Stat label="Est. onboarding time" value={estimate ? `${fmtClock(estimate.est_seconds)}` : "—"} />
               <Stat label="Est. cost" value={estimate ? `$${estimate.est_cost_ondemand.toFixed(2)}` : "—"} />
             </dl>
+            {servingDown && (
+              <p data-testid="serving-offline-note" className="text-sm text-amber-400">{SERVING_OFFLINE_NOTE}</p>
+            )}
             {note && <p className="text-sm text-red-400">{note}</p>}
             <div className="flex justify-between">
               <Button variant="outline" onClick={() => goto("model")} data-testid="step-back">Back</Button>
-              <Button onClick={startOnboard} disabled={!canOnboard || busy} data-testid="step-onboard">
+              <Button onClick={startOnboard} disabled={!canOnboard || busy || servingDown} data-testid="step-onboard">
                 {busy ? "Starting…" : "Start onboarding"}
               </Button>
             </div>
@@ -551,11 +594,14 @@ export default function OnboardingWizard() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+// `sub` renders a small muted line under the value — used only by the Model stat to show the tier's
+// description (whatever copy the registry carries), nothing hardcoded.
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
       <dt className="text-xs text-slate-500">{label}</dt>
       <dd className="mt-0.5 truncate font-medium text-slate-100" title={value}>{value}</dd>
+      {sub && <p className="mt-0.5 truncate text-xs text-slate-500" title={sub}>{sub}</p>}
     </div>
   );
 }

@@ -75,11 +75,16 @@ roll(){
 
   # Produce a register-task-definition input from the current def: drop the
   # server-managed fields and set the (single) container's image to the new tag.
-  local newdef
-  newdef="$(printf '%s' "$current" | python3 - "$image" <<'PY'
+  # The def goes via a temp FILE, not a pipe — `python3 -` takes its SCRIPT from
+  # stdin (the heredoc), so piping the JSON in as well silently reads empty.
+  local newdef tmpdef
+  tmpdef="$(mktemp)"
+  printf '%s' "$current" > "$tmpdef"
+  newdef="$(python3 - "$image" "$tmpdef" <<'PY'
 import json, sys
-image = sys.argv[1]
-td = json.load(sys.stdin)
+image, path = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    td = json.load(f)
 for f in ("taskDefinitionArn","revision","status","requiresAttributes",
           "compatibilities","registeredAt","registeredBy","deregisteredAt"):
     td.pop(f, None)
@@ -89,6 +94,7 @@ for c in td["containerDefinitions"]:
 json.dump(td, sys.stdout)
 PY
 )"
+  rm -f "$tmpdef"
 
   local arn
   arn="$($AWS ecs register-task-definition --cli-input-json "$newdef" \

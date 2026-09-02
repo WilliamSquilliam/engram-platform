@@ -89,6 +89,9 @@ def estimate(corpus_id: str, user: User = Depends(get_current_user), db: Session
         "total_bytes": total_bytes,
         "file_types": file_types,
         "model_tier": corpus.model_tier,
+        # Drives the review step's onboard gate: when the GPU serving plane is down the button is
+        # disabled (the review-step poll re-enables it the moment this flips true).
+        "serving_up": serving.serving_up(),
         **metrics.onboard_estimate(len(docs)),
     }
 
@@ -125,6 +128,14 @@ def onboard(
         corpus.onboarding_step = "review"
         db.commit()
         return JSONResponse(status_code=409, content={"status": "no_serving_engine", "tier": tier.id})
+
+    # Liveness gate: the tier IS wired to a live model, but the GPU onboard plane is unreachable right
+    # now (box stopped/booting). Dispatch NOTHING and return 503 so the UI keeps everything saved and
+    # re-enables Start onboarding when serving is back; the cursor stays at "review" like the 409 path.
+    if not serving.serving_up():
+        corpus.onboarding_step = "review"
+        db.commit()
+        return JSONResponse(status_code=503, content={"status": "serving_offline", "tier": tier.id})
 
     # Tier is live: pin the resolved weights the carts are stamped to (model-binding), advance the
     # wizard cursor, mark docs as onboarding, then dispatch through the shared job machinery.

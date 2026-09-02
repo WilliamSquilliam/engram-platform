@@ -305,9 +305,16 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   estimate: (id: string) => req<OnboardEstimate>(`/corpora/${id}/estimate`),
-  // Step 5. Returns the onboarding state on dispatch, or {no_serving_engine: true} on the 409 gate
-  // (no live model yet) so the UI shows "starts once a model is enabled" instead of throwing.
-  onboard: async (id: string): Promise<OnboardingState | { no_serving_engine: true; tier?: string }> => {
+  // Step 5. Returns the onboarding state on dispatch, or a structured gate result instead of throwing:
+  //   409 {no_serving_engine} — no live model yet ("starts once a model is enabled").
+  //   503 {serving_offline}   — model is wired but the GPU plane is down right now (try again shortly).
+  onboard: async (
+    id: string,
+  ): Promise<
+    | OnboardingState
+    | { no_serving_engine: true; tier?: string }
+    | { serving_offline: true; tier?: string }
+  > => {
     const token = getToken();
     const res = await fetch(`${API_URL}/corpora/${id}/onboard`, {
       method: "POST",
@@ -316,6 +323,10 @@ export const api = {
     if (res.status === 409) {
       const j = await res.json().catch(() => ({}));
       if (j.status === "no_serving_engine") return { no_serving_engine: true, tier: j.tier };
+    }
+    if (res.status === 503) {
+      const j = await res.json().catch(() => ({}));
+      if (j.status === "serving_offline") return { serving_offline: true, tier: j.tier };
     }
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));

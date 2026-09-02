@@ -17,7 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import asdict, dataclass
+
+import httpx
 
 from . import config
 
@@ -38,6 +41,9 @@ class ModelTier:
     precision: str       # "fp8" | "w4a4" | "bf16" | "" — informational
     context_tokens: int  # max context, informational
     enabled: bool        # selectable in the menu (needs a live serving engine)
+    # Public model name shown to users (the review + choose-model steps). "" falls back to `label`,
+    # so this is a defaulted field (keeps every existing positional/kwarg constructor call valid).
+    display_name: str = ""
 
     @property
     def available(self) -> bool:
@@ -80,6 +86,7 @@ def _load_registry() -> list[ModelTier]:
                 precision=str(it.get("precision", "")),
                 context_tokens=int(it.get("context_tokens", 0)),
                 enabled=bool(it.get("enabled", False)),
+                display_name=str(it.get("display_name", "")),
             )
             for it in items
         ]
@@ -131,3 +138,29 @@ def profile() -> dict:
         "default_tier": DEFAULT_TIER_ID,
         "tiers": [asdict(t) for t in _TIERS],
     }
+
+
+# --- serving-plane liveness (onboard gate) ------------------------------------------------------
+# Is the GPU onboard plane reachable RIGHT NOW? The wizard's review step polls this to gate the
+# "Start onboarding" button, so the result is cached briefly (module-level timestamp) — polling
+# can't hammer the box, and one probe covers every concurrent wizard within the window.
+_SERVING_UP_TTL = 10.0   # seconds a probe result is reused before we re-check
+_SERVING_UP_TIMEOUT = 2.5  # per-probe httpx timeout; a slow/hung box reads as down, fast
+_serving_up_cache: tuple[float, bool] = (0.0, False)  # (checked_at_monotonic, result)
+
+
+def serving_up() -> bool:
+    """True when the onboard plane (config.ML_SERVICE_URL) answers /health with 200. Any exception
+    or non-200 is False. Cached ~10s so wizard polling stays cheap; a probe never raises."""
+    global _serving_up_cache
+    now = time.monotonic()
+    checked_at, cached = _serving_up_cache
+    if now - checked_at < _SERVING_UP_TTL:
+        return cached
+    try:
+        r = httpx.get(f"{config.ML_SERVICE_URL.rstrip('/')}/health", timeout=_SERVING_UP_TIMEOUT)
+        up = r.status_code == 200
+    except Exception:  # noqa: BLE001  (unreachable serving plane, not an error)
+        up = False
+    _serving_up_cache = (now, up)
+    return up

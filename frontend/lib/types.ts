@@ -60,6 +60,8 @@ export interface ConnectorsResponse {
 export interface ModelTier {
   id: string;
   label: string;
+  // Public model name shown to users; falls back to `label` when absent.
+  display_name?: string;
   description: string;
   precision: string;
   context_tokens: number;
@@ -87,6 +89,8 @@ export interface OnboardEstimate {
   total_bytes: number;
   file_types: Record<string, number>;
   model_tier: string | null;
+  // False when the GPU onboard plane is down — gates the review step's Start onboarding button.
+  serving_up: boolean;
   est_seconds: number;
   est_cost_ondemand: number;
   est_cart_gb: number;

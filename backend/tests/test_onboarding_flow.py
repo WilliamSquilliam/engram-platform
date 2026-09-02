@@ -177,3 +177,74 @@ def test_reupload_to_ready_corpus_resets_step_to_documents(client, auth, make_co
     c = client.get(f"/corpora/{cid}", headers=headers).json()
     assert c["status"] == "new"
     assert c["onboarding_step"] == "documents"
+
+
+# --- serving-plane liveness: the onboard gate when the GPU is offline ---------------------------
+
+def _live_balanced(monkeypatch):
+    """Flip the 'balanced' tier to a real, enabled model for the current test (helper for the
+    serving-offline tests below, mirroring test_onboard_dispatches_when_tier_available)."""
+    live = ModelTier("balanced", "Balanced", "test", model_ref="test/model-1",
+                     precision="fp8", context_tokens=8192, enabled=True)
+    monkeypatch.setattr(serving, "tier", lambda tid: live if tid == "balanced" else None)
+    monkeypatch.setattr(serving, "model_ref_for_tier", lambda tid: live.model_ref)
+    return live
+
+
+def test_estimate_reports_serving_down(client, auth, make_corpus, upload_doc, monkeypatch):
+    """The review estimate carries serving_up=false when the onboard plane is unreachable (drives the
+    UI gate). Overrides the autouse serving_up_true fixture."""
+    monkeypatch.setattr(serving, "serving_up", lambda: False)
+    headers, _ = auth
+    cid = make_corpus(headers)
+    upload_doc(headers, cid, "some text")
+    est = client.get(f"/corpora/{cid}/estimate", headers=headers).json()
+    assert est["serving_up"] is False
+
+
+def test_onboard_503_when_serving_offline(client, auth, make_corpus, upload_doc, mock_ml, monkeypatch):
+    """Tier is live but the GPU plane is down: /onboard returns 503 serving_offline, dispatches
+    nothing, and parks the cursor at 'review'."""
+    _live_balanced(monkeypatch)
+    monkeypatch.setattr(serving, "serving_up", lambda: False)
+    headers, _ = auth
+    cid = make_corpus(headers)
+    upload_doc(headers, cid, "alpha beta")
+    client.patch(f"/corpora/{cid}/onboarding",
+                 json={"onboarding_step": "review", "model_tier": "balanced"}, headers=headers)
+
+    r = client.post(f"/corpora/{cid}/onboard", headers=headers)
+    assert r.status_code == 503
+    assert r.json()["status"] == "serving_offline"
+
+    # Nothing dispatched: no job, corpus still 'new', cursor parked at 'review'.
+    assert client.get(f"/corpora/{cid}/jobs", headers=headers).json() == []
+    c = client.get(f"/corpora/{cid}", headers=headers).json()
+    assert c["status"] == "new"
+    assert c["onboarding_step"] == "review"
+
+
+def test_onboard_tier_gate_wins_when_serving_down(client, auth, make_corpus, upload_doc, mock_ml,
+                                                  monkeypatch):
+    """The tier-availability 409 is checked BEFORE the serving-liveness 503: a placeholder tier with
+    serving also down still returns 409 no_serving_engine (the tier gate wins first)."""
+    monkeypatch.setattr(serving, "serving_up", lambda: False)
+    headers, _ = auth
+    cid = make_corpus(headers)
+    upload_doc(headers, cid, "alpha beta")
+    client.patch(f"/corpora/{cid}/onboarding",
+                 json={"onboarding_step": "review", "model_tier": "balanced"}, headers=headers)
+
+    r = client.post(f"/corpora/{cid}/onboard", headers=headers)
+    assert r.status_code == 409
+    assert r.json()["status"] == "no_serving_engine"
+
+
+def test_models_response_includes_display_name(client, auth):
+    """GET /models exposes display_name on each tier (registry-driven, defaults empty)."""
+    headers, _ = auth
+    tiers = client.get("/models", headers=headers).json()["tiers"]
+    assert tiers, "expected at least one tier"
+    # Present on every tier and empty by default (the placeholder registry sets no display_name).
+    assert all("display_name" in t for t in tiers)
+    assert all(t["display_name"] == "" for t in tiers)

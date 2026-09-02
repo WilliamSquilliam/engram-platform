@@ -36,7 +36,7 @@ os.environ["RETRIEVAL_DENSE"] = "off"
 # Make the `app` package importable (platform/backend on sys.path).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import ml_client  # noqa: E402
+from app import ml_client, serving  # noqa: E402
 from app.main import app  # noqa: E402
 from app.ratelimit import limiter  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
@@ -44,6 +44,14 @@ from starlette.testclient import TestClient  # noqa: E402
 # Belt-and-suspenders: force the auth rate limiter off for the whole suite so its
 # many register/login calls from one client IP never trip the per-IP limit.
 limiter.enabled = False
+
+
+@pytest.fixture(autouse=True)
+def serving_up_true(monkeypatch):
+    """Pin serving.serving_up -> True for every test (mirrors the env-leak pinning above): the real
+    probe would hit ML_SERVICE_URL/health, so without this the onboard tests would depend on a live
+    box. Tests covering the serving-offline path override this back to False."""
+    monkeypatch.setattr(serving, "serving_up", lambda: True)
 
 
 @pytest.fixture()

@@ -243,6 +243,11 @@ Wants=network-online.target
 Type=simple
 User=$RUN_USER
 EnvironmentFile=$ENV_FILE
+# venv/bin FIRST on PATH: the stack shells out to pip-installed console tools
+# (ninja for vLLM's JIT kernel warmup, etc.) that live only in the venv — the
+# systemd default PATH broke engine startup with "No such file or directory:
+# 'ninja'" inside determine_available_memory.
+Environment=PATH=$VENV/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WorkingDirectory=$APP_DIR/ml_service
 ExecStart=$VENV/bin/uvicorn app:app --host 127.0.0.1 --port 8001
 Restart=on-failure
@@ -264,6 +269,8 @@ Wants=network-online.target engram-seed-in.service
 Type=simple
 User=$RUN_USER
 EnvironmentFile=$ENV_FILE
+# venv/bin FIRST on PATH — same constraint as the onboard unit (ninja et al.).
+Environment=PATH=$VENV/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WorkingDirectory=$APP_DIR/ml_service
 ExecStart=$VENV/bin/uvicorn vllm_inference:app --host 127.0.0.1 --port 8002
 Restart=on-failure
