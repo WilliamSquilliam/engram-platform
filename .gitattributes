@@ -1,8 +1,8 @@
 # Shell scripts are shipped verbatim to Linux boxes (infra/serving-aws/provision.sh
-# bundles bootstrap.sh onto the GPU instance) — a CRLF checkout on Windows would break
 # bash there. Force LF for everything that executes or configures Linux.
+# bundles bootstrap.sh onto the GPU instance) — a CRLF checkout on Windows would break
+*.env.example text eol=lf
 *.sh text eol=lf
 *.tf text eol=lf
 *.tfvars text eol=lf
-*.env.example text eol=lf
 .env.aws.example text eol=lf
