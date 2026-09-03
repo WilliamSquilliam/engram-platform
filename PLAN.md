@@ -441,6 +441,31 @@ the Decisions log.
 
 (newest first)
 
+- **2026-09-03 — RESIDENT QRC validated + OFFICIAL anchors remeasured; multi-cart serving retired
+  from the estimator.** Wheel 0.7.0 span-addressable loading (explicit-segment registry, per-span
+  RoPE rebase incl. negative deltas, loud geometric validation) served the official 4-arm k=3 run:
+  **carts 9/15, hybrid 13/15, resident 13/15, RAG 13/15** at 128 gen tokens — resident ties the
+  scaffold with zero load errors (span_loads 98 / span_tokens 38.6k; both misses are deliberation
+  truncation, not retrieval/load). Dynamic top-k on the relevance-ratio cut (the RRF-score version
+  was unthresholdable — caught in review): ratio 0.85 → **14/15 at mean k 2.4** (weak runner-ups
+  cut free). Official sweep (qrc_res vs churned RAG, conc 1..128, production retrieval in-loop,
+  ~15ms/query routing): **3.53 qps at conc 128 vs 0.951 (3.7×), 384/384 zero errors, 2.2× the
+  retired multi-cart anchors**; TTFT p50 250ms vs 781ms at conc 1. Estimator refreshed + published
+  (landing ac783ca). ON THE FOUNDER'S DESK: promote QRC_MODE=resident + RETRIEVAL_DYNAMIC_K=on
+  (ratio 0.85) as platform defaults, then UAT deploy.
+  **The environment-drift saga (half the day, all avoidable):** the fresh us-south-2 capture ran an
+  OLDER image than the prior region — r570 driver (CUDA 12.8) vs torch 2.13's cu130-only builds,
+  py3.10 vs flashinfer 0.6.16's py3.12+ import syntax — and the unpinned resolve turned that into
+  fork/spawn multiproc crash-loops masking the real errors for over an hour of metered debugging.
+  Also hit: CRLF corruption in two scripts (Windows edits), root-owned venv PermissionError, empty
+  per-region persistent FS (weights re-downloaded; seed-out populates it for future relaunches),
+  launch.sh crashing post-capture (hunt kept cycling — double-launch risk), and BOTH ScheduleWakeup
+  and cron never firing (wakeups now ride background-poller exits, with the founder's backoff
+  protocol: 1→2→4→8 min, reset on any breakage/intervention). Hardening SHIPPED (83e63fa, c018a7e,
+  77a9fa0, 58cb451): bootstrap preflight (driver≥580 / py≥3.12 / venv chown), requirements.lock as
+  pip constraints on every provision, spawn + rope-convention env mirrored into the template, LF
+  pinned for *.sh, and the dangling-DNS guard (gpu A records deleted on both terminate paths —
+  audited zone: exactly 2 records, repointed not accumulated).
 - **2026-09-03 — RESIDENT-QRC serve mode + dynamic top-k BUILT (behind flags, pending box validation).**
   Two additions on top of the QRC hybrid path, both OFF by default so nothing changes until proven:
   **(1) RESIDENT-QRC (`QRC_MODE=resident`)** — instead of re-prefilling docs 2..k's routed chunks as
