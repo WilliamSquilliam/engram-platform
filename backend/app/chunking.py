@@ -86,18 +86,56 @@ def _lexical_chunk_rank(question: str, index_texts: list[str]) -> list[int]:
     return ranked
 
 
-def _dense_chunk_rank(question: str, index_texts: list[str], embedder) -> list[int] | None:
-    """Chunk indices ranked by dense cosine to the question, or None when no embedder
-    (caller fuses lexical-only — the same graceful degrade as doc retrieval)."""
-    if embedder is None:
-        return None
+def chunk_index_texts(text: str, descs: list[str] | None,
+                      chunk_tokens: int = CHUNK_TOKENS) -> list[str]:
+    """Each chunk's INDEX text (desc folded in when present, else the chunk alone) —
+    the single definition BOTH ranking stages and any caller-side embedding cache must
+    share, so cached chunk vectors are byte-for-byte embeddings of what gets ranked."""
+    chunks = chunk_texts(text, chunk_tokens)
+    descs = descs or []
+    return [(f"{descs[i]}\n{c}" if i < len(descs) and descs[i] else c)
+            for i, c in enumerate(chunks)]
+
+
+def embed_normalized(embedder, texts: list[str]):
+    """Normalized fastembed vectors [n, d] for `texts` (the caller caches these).
+    None on any failure — dense degrades, lexical still routes."""
     try:
         import numpy as np
-        vecs = np.array(list(embedder.embed(index_texts)), dtype=np.float32)
-        qv = np.array(list(embedder.embed([question]))[0], dtype=np.float32)
-        vecs /= (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12)
-        qv /= (np.linalg.norm(qv) + 1e-12)
-        sims = vecs @ qv
+        v = np.array(list(embedder.embed(texts)), dtype=np.float32)
+        v /= (np.linalg.norm(v, axis=1, keepdims=True) + 1e-12)
+        return v
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dense_chunk_rank(question: str, index_texts: list[str], embedder,
+                      vecs=None, q_vec=None) -> list[int] | None:
+    """Chunk indices ranked by dense cosine to the question, or None when the dense
+    stage is unavailable (caller fuses lexical-only — same degrade as doc retrieval).
+
+    PERFORMANCE CONTRACT (first QRC timing run, 2026-09-03): embedding a doc's chunks
+    per query cost ~8.4s/query on the serving box's CPU (~60 texts re-embedded every
+    question — the same defect class as the doc-level re-embed bug fixed 2026-09-02).
+    Callers therefore pass `vecs` (cached normalized chunk vectors, embed-once-per-doc
+    via embed_normalized over chunk_index_texts) and `q_vec` (the question embedded
+    ONCE per request, shared across routed docs); with both present this function is
+    pure matmul + sort. The embed-per-call path below survives only as the fallback
+    for callers without a cache."""
+    try:
+        import numpy as np
+        if vecs is None:
+            if embedder is None:
+                return None
+            vecs = embed_normalized(embedder, index_texts)
+            if vecs is None:
+                return None
+        if q_vec is None:
+            if embedder is None:
+                return None
+            qv = np.array(list(embedder.embed([question]))[0], dtype=np.float32)
+            q_vec = qv / (np.linalg.norm(qv) + 1e-12)
+        sims = vecs @ q_vec
         return sorted(range(len(index_texts)), key=lambda i: (-float(sims[i]), i))
     except Exception:  # noqa: BLE001 — dense degrades, lexical still routes
         return None
@@ -115,17 +153,27 @@ def _rrf_indices(ranked_lists: list[list[int]], rrf_k: int = _RRF_K) -> list[int
 
 def route_chunks(question: str, docs: list[dict], embedder=None,
                  chunk_tokens: int = CHUNK_TOKENS,
-                 budget_tokens: int = CHUNK_BUDGET_TOKENS) -> list[dict]:
+                 budget_tokens: int = CHUNK_BUDGET_TOKENS, q_vec=None) -> list[dict]:
     """Per routed doc, the answer-bearing chunks for `question` under a token budget.
 
-    docs: [{"doc_id": str, "text": str, "descs": list[str] | None}] — descs, when
-    present, are parallel to chunk_spans(text, chunk_tokens) and are folded into each
-    chunk's INDEX text only (retrieval metadata, mirroring doc descriptions).
+    docs: [{"doc_id": str, "text": str, "descs": list[str] | None,
+    "vecs": ndarray | None}] — descs, when present, are parallel to
+    chunk_spans(text, chunk_tokens) and are folded into each chunk's INDEX text only
+    (retrieval metadata, mirroring doc descriptions). "vecs" (optional) are the doc's
+    CACHED normalized chunk vectors — embed_normalized(embedder,
+    chunk_index_texts(text, descs)) computed once per doc by the caller; without them
+    the dense stage re-embeds every chunk per query, which measured ~8.4s/query on
+    the serving box (see _dense_chunk_rank's performance contract). `q_vec` is the
+    question's normalized vector, embedded ONCE per request and shared across docs.
+    Each routed doc's SERVED text opens with a "From "<title>":" header (title = the
+    doc's first non-empty line) — the first QRC accuracy run showed anonymous
+    excerpts leave the model unable to tell which document a snippet belongs to.
 
     Selection is PER DOC (each routed doc gets its own budget and always
     contributes): rank the doc's chunks lexically (bm25s) + densely (when an
-    embedder is given), RRF-fuse, then take top chunks until ~budget_tokens.
-    Selected chunks are re-assembled in DOCUMENT ORDER with an elision marker.
+    embedder or cached vectors are given), RRF-fuse, then take top chunks until
+    ~budget_tokens. Selected chunks re-assemble in DOCUMENT ORDER with an elision
+    marker.
 
     Returns [{"doc_id", "text", "chunk_indices"}] in the input doc order. A doc at
     or under budget passes through whole (its full text IS the selection)."""
@@ -136,18 +184,17 @@ def route_chunks(question: str, docs: list[dict], embedder=None,
         spans = chunk_spans(text, chunk_tokens)
         if not spans:
             continue
+        title = next((ln.strip() for ln in text.splitlines() if ln.strip()), doc["doc_id"])
+        header = f'From "{title[:120]}":\n'
         if len(text) <= budget_chars or len(spans) == 1:
-            out.append({"doc_id": doc["doc_id"], "text": text,
+            out.append({"doc_id": doc["doc_id"], "text": header + text,
                         "chunk_indices": list(range(len(spans)))})
             continue
         chunks = [text[a:b] for a, b in spans]
-        descs = doc.get("descs") or []
-        index_texts = [
-            (f"{descs[i]}\n{c}" if i < len(descs) and descs[i] else c)
-            for i, c in enumerate(chunks)
-        ]
+        index_texts = chunk_index_texts(text, doc.get("descs"), chunk_tokens)
         lexical = _lexical_chunk_rank(question, index_texts)
-        dense = _dense_chunk_rank(question, index_texts, embedder)
+        dense = _dense_chunk_rank(question, index_texts, embedder,
+                                  vecs=doc.get("vecs"), q_vec=q_vec)
         fused = _rrf_indices([lexical] if dense is None else [lexical, dense])
         picked: list[int] = []
         used = 0
@@ -157,7 +204,7 @@ def route_chunks(question: str, docs: list[dict], embedder=None,
             if used >= budget_chars:
                 break
         picked.sort()  # document order — the model reads a coherent (elided) doc
-        parts: list[str] = []
+        parts: list[str] = [header]
         prev = None
         for i in picked:
             if prev is not None and i != prev + 1:

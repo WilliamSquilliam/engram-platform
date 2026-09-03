@@ -59,9 +59,13 @@ ADAPTIVE_THETA = os.environ.get("ADAPTIVE_THETA", "")
 #   QRC_MODE=off              -> legacy multi-cart serve (every retrieved doc_id handed over, no context).
 QRC_MODE = os.environ.get("QRC_MODE", "hybrid").lower()
 # Chunk-description sidecar generation at onboard (one cart-resident generation per doc yields a short
-# line per chunk, folded into the chunk's INDEX text as routing metadata — never served). "on" (default)
-# / "off". Only runs on the vllm backend when QRC_MODE=hybrid (see routers/jobs.py).
-QRC_CHUNK_DESC = os.environ.get("QRC_CHUNK_DESC", "on").lower()
+# line per chunk, folded into the chunk's INDEX text as routing metadata — never served). Only runs on
+# the vllm backend when QRC_MODE=hybrid (see routers/jobs.py). DEFAULT OFF (decided with the founder,
+# 2026-09-03): measured at 16.7 s/doc — 6x the 2.72 s/doc onboarding headline — while the validated
+# 13/15 routing accuracy came mostly from raw chunk text (4 of 13 sidecar docs had failed to parse and
+# routing didn't suffer). Flip on per-env once the generation is cheaper (bigger chunks -> fewer lines,
+# or piggyback on the existing doc-description call).
+QRC_CHUNK_DESC = os.environ.get("QRC_CHUNK_DESC", "off").lower()
 # Token budget for the routed context PER doc. The canonical default lives in chunking.CHUNK_BUDGET_TOKENS
 # (one source of truth shared with the bench); this is only an optional env override for tuning without
 # touching the shared core.

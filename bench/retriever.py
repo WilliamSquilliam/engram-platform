@@ -171,6 +171,12 @@ class HybridRetriever:
                 import numpy as np
                 v = np.array(list(embedder.embed(self.texts)), dtype=np.float32)
                 self._doc_vecs = v / (np.linalg.norm(v, axis=1, keepdims=True) + 1e-12)
+        # QRC chunk-vector cache: {doc_id: normalized [n_chunks, d]} — embed a doc's chunk index
+        # texts ONCE, on first routing touch, and reuse across every query. Without it the chunk
+        # dense stage re-embedded ~60 texts per query = ~8.4s/query measured on the serving box
+        # (the same defect class the BUILD-ONCE comment above records at doc level). Keyed by doc_id
+        # only: descs are fixed per process run (the sidecar is loaded once at phase start).
+        self._chunk_vecs: dict[str, object] = {}
 
     def _lexical(self, question: str) -> list[str]:
         import bm25s
@@ -226,11 +232,27 @@ class HybridRetriever:
         if not doc_ids:
             return ""
         descs_by_doc = descs_by_doc or {}
-        docs = [{"doc_id": d, "text": self._by_id.get(d, ""), "descs": descs_by_doc.get(d)}
-                for d in doc_ids if self._by_id.get(d, "")]
         # The SAME embedder instance the doc retriever already holds (module singleton), or None when
         # dense is off/unavailable — never construct a second embedder for the chunk stage.
         embedder = _dense_embedder(self.cache_dir) if self.dense else None
+        docs = []
+        for d in doc_ids:
+            text = self._by_id.get(d, "")
+            if not text:
+                continue
+            descs = descs_by_doc.get(d)
+            # Embed-once-per-doc chunk vectors (see _chunk_vecs in __init__); a failed embed caches
+            # None and the dense stage degrades to lexical for that doc, never retrying per query.
+            if embedder is not None and d not in self._chunk_vecs:
+                self._chunk_vecs[d] = chunking.embed_normalized(
+                    embedder, chunking.chunk_index_texts(text, descs))
+            docs.append({"doc_id": d, "text": text, "descs": descs,
+                         "vecs": self._chunk_vecs.get(d)})
+        # The question embeds ONCE per request, shared across all routed docs.
+        q_vec = None
+        if embedder is not None:
+            qv = chunking.embed_normalized(embedder, [question])
+            q_vec = qv[0] if qv is not None else None
         kw = {} if budget_tokens is None else {"budget_tokens": budget_tokens}
-        routed = chunking.route_chunks(question, docs, embedder=embedder, **kw)
+        routed = chunking.route_chunks(question, docs, embedder=embedder, q_vec=q_vec, **kw)
         return chunking.compose_context(routed)

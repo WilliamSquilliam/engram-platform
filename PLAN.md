@@ -441,6 +441,27 @@ the Decisions log.
 
 (newest first)
 
+- **2026-09-03 — QRC hybrid serving BUILT + VALIDATED: k=3 accuracy 8-9→13/15 at 128 gen tokens
+  (14/15 at 256), onboarding cost unchanged, routing adds ~56ms/query.** Design: top-1 retrieved
+  doc serves as the resident cart (proven 15/15 solo); docs 2..k contribute query-routed chunks
+  (~256 tok/doc, bm25s+dense+RRF per doc — `backend/app/chunking.py`, byte-identical core for
+  product AND bench) as real-token context on the same request (engine QueryReq gained `context`).
+  Three iterations, each driven by reading the failing answers: **(1)** first run 11/15 — the
+  'Documents:' framing made the model treat visible excerpts as its ONLY sources (it never
+  consulted the resident cart) and it narrated deliberation until the token budget died;
+  **(2)** reframed ('Above is the primary document… answer directly') + per-doc 'From "<title>":'
+  headers → 13/15, tying RAG (13/15) with the primary doc still resident; **(3)** 256-token
+  diagnostic: qrc 14/15 vs cart 9/15, rag 15/15 — the residual misses are deliberation truncation,
+  NOT routing (relevant to the INFERENCE_MAX_TOKENS=96 prod default — consider raising).
+  Perf defect caught by measuring: per-query chunk re-embedding cost ~8.4s/query (same class as
+  the 2026-09-02 doc-level re-embed bug) → embed-once-per-doc vector caches (bench retriever +
+  `_CorpusIndex.chunk_vecs`) → p50 55.6ms/query warm, one-time ~2-4s/doc first touch.
+  Chunk descriptions (founder-approved OFF by default, `QRC_CHUNK_DESC`): measured 16.7 s/doc —
+  6× the 2.72 s/doc onboarding headline — with 4/13 docs failing to parse at max_tokens=384, while
+  13/15 routing held mostly on raw chunk text; machinery + sidecar stay (flip on when cheaper:
+  bigger chunks or piggyback the doc-description call). `QRC_MODE=hybrid` is the default;
+  `off` = legacy multi-cart. compare.py deliberately unchanged (demo surface, still multi-cart).
+  Raw artifacts: `bench/results/accuracy_k3_qrc{3arm,_round2,_256tok}.json` (box + local).
 - **2026-09-03 — Compression EXONERATED for the k=3 accuracy gap (codec A/B on the box):
   lossless carts fail composed exactly like 3-bit carts ⇒ composition interference confirmed,
   QRC stays the designed fix.** Method (`bench/codec_ab.sh`, transient systemd unit on the GPU

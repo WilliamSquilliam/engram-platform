@@ -228,7 +228,8 @@ class _CorpusIndex:
     A query now costs one query-tokenize + one query-embed + ranking math. Rebuilds when the
     signature changes (see _corpus_index)."""
 
-    __slots__ = ("doc_ids", "index_texts", "texts", "chunk_descs", "signature", "bm25", "doc_vecs")
+    __slots__ = ("doc_ids", "index_texts", "texts", "chunk_descs", "signature", "bm25", "doc_vecs",
+                 "chunk_vecs")
 
     def __init__(self, doc_ids, index_texts, texts, chunk_descs, signature):
         self.doc_ids = doc_ids
@@ -236,9 +237,13 @@ class _CorpusIndex:
         self.texts = texts
         # {cart_id: [chunk_desc, ...]} from the QRC sidecar — descs parallel to
         # chunking.chunk_spans(texts[cart_id]). Query-time route_chunks_context folds these into each
-        # chunk's index text. Chunk SPANS themselves are recomputed per query by chunking.route_chunks
-        # (~10-25 chunks over ONE doc — cheap), so they're not pre-built here (keeps build cost flat).
+        # chunk's index text. Chunk SPANS are recomputed per query (string slicing — cheap), but chunk
+        # EMBEDDINGS are NOT: re-embedding a doc's ~25 chunk index texts per query measured ~8.4s/query
+        # on the serving box (2026-09-03 — the same defect class as the doc-level re-embed fixed
+        # 2026-09-02), so chunk_vecs caches each doc's normalized chunk vectors on first routing touch.
+        # Lives on the index so a rebuild (docs/descriptions/sidecar changed) naturally drops the cache.
         self.chunk_descs = chunk_descs
+        self.chunk_vecs = {}
         self.signature = signature
         self.bm25 = None
         self.doc_vecs = None
@@ -446,14 +451,31 @@ def route_chunks_context(corpus_id: str, question: str, doc_ids: list[str]) -> s
     Reuses the cached corpus index (one build shared with retrieve()), maps each doc_id to its SERVED
     text (the same texts[cart_id] the cart holds) and its sidecar chunk descs, then defers all ranking
     to chunking.route_chunks (bm25s + optional dense, per doc, under the config token budget) and joins
-    with chunking.compose_context. Deterministic; unknown doc_ids raise KeyError (mirrors context_for);
-    embed failures degrade INSIDE chunking (lexical-only), never raising here."""
+    with chunking.compose_context. Chunk vectors are embedded ONCE per doc into idx.chunk_vecs and the
+    question ONCE per request (the per-query re-embed cost ~8.4s/query on the box — see _CorpusIndex);
+    Deterministic; unknown doc_ids raise KeyError (mirrors context_for); embed failures degrade INSIDE
+    chunking (lexical-only), never raising here."""
     idx = _corpus_index(corpus_id, _tenant_for_corpus(corpus_id))
     missing = [d for d in doc_ids if d not in idx.texts]
     if missing:
         raise KeyError(f"unknown doc_ids for this corpus: {missing}")
-    docs = [{"doc_id": d, "text": idx.texts[d], "descs": idx.chunk_descs.get(d)} for d in doc_ids]
-    routed = chunking.route_chunks(question, docs, embedder=_dense_embedder(),
+    embedder = _dense_embedder()
+    docs = []
+    for d in doc_ids:
+        descs = idx.chunk_descs.get(d)
+        # Embed-once-per-doc chunk vectors, cached on the index (a rebuild drops them). A failed
+        # embed caches None so the dense stage degrades for that doc without retrying every query.
+        if embedder is not None and d not in idx.chunk_vecs:
+            idx.chunk_vecs[d] = chunking.embed_normalized(
+                embedder, chunking.chunk_index_texts(idx.texts[d], descs))
+        docs.append({"doc_id": d, "text": idx.texts[d], "descs": descs,
+                     "vecs": idx.chunk_vecs.get(d)})
+    # The question embeds ONCE per request, shared across all routed docs.
+    q_vec = None
+    if embedder is not None:
+        qv = chunking.embed_normalized(embedder, [question])
+        q_vec = qv[0] if qv is not None else None
+    routed = chunking.route_chunks(question, docs, embedder=embedder, q_vec=q_vec,
                                    budget_tokens=config.QRC_BUDGET_TOKENS)
     return chunking.compose_context(routed)
 

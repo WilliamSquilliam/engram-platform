@@ -601,13 +601,21 @@ def _cart_prefix_ids(store, doc_ids: list[str], vocab: int) -> tuple[list[int], 
 
 def _cart_user_turn(question: str, context: str) -> str:
     """The user-turn text for a cart request. Empty context -> today's bare `question` (byte-for-byte
-    the resident-only serve path). Non-empty context -> the SAME 'Documents:\\n\\n{context}\\n\\n
-    Question:' framing serve_rag uses, so QRC-hybrid serving prefills docs 2..k's routed real-text
-    chunks as ordinary context on TOP of the top-1 doc's resident cart KV. The cart placeholder prefix
-    is prepended AFTER this by _compose_cart_prompt (it stays FIRST, positions 0..p-1 — the prefix-only
-    connector contract and original-position RoPE both require it), so the resident cart and the
-    routed context coexist in one request: cart = resident KV, context = extra real-token prefill."""
-    return f"Documents:\n\n{context}\n\nQuestion: {question}" if context else question
+    the resident-only serve path). Non-empty context (QRC hybrid) -> the routed excerpts of docs 2..k
+    framed as ADDITIONAL to the resident cart. Two hard-won framing rules (first QRC accuracy run,
+    2026-09-03): (1) serve_rag's bare 'Documents:' framing made the model treat the visible excerpts
+    as the ONLY sources — it enumerated them and never consulted the resident cart (which, from the
+    model's view, is a document it already read ABOVE this turn: the placeholder prefix holds positions
+    0..p-1) — so the turn must say the primary document is above; (2) with multi-doc context the model
+    slips into visible deliberation ('The user asks... We need to find...') and burns the token budget
+    before answering — so the turn demands a direct answer. The cart placeholder prefix is prepended
+    by _compose_cart_prompt (it stays FIRST — prefix-only connector contract, original-position RoPE);
+    cart = resident KV, context = extra real-token prefill."""
+    if not context:
+        return question
+    return (f"Above is the primary document. Below are short excerpts from additional related "
+            f"documents.\n\n{context}\n\nAnswer directly and concisely; do not restate the question "
+            f"or narrate your search.\n\nQuestion: {question}")
 
 
 def serve_query(doc_ids: list[str], question: str, max_tokens: int = 64,

@@ -68,10 +68,13 @@ def test_route_chunks_respects_budget():
 
 
 def test_small_doc_passes_through_whole():
-    """A doc at/under budget IS its own selection (full text), no elision."""
+    """A doc at/under budget IS its own selection (full text), no elision — behind the
+    'From "<title>":' header (title = first non-empty line) that names the source doc for
+    the model (anonymous excerpts proved confusing in the first QRC accuracy run)."""
     docs = [{"doc_id": "d1", "text": "a short note about the vela observatory", "descs": None}]
     routed = chunking.route_chunks("vela", docs, embedder=None, budget_tokens=256)
-    assert routed[0]["text"] == docs[0]["text"]
+    assert routed[0]["text"].startswith('From "a short note about the vela observatory":')
+    assert routed[0]["text"].endswith(docs[0]["text"])
 
 
 def test_compose_context_orders_and_joins_by_doc():
