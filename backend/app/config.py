@@ -50,6 +50,24 @@ INFERENCE_MAX_TOKENS = int(os.environ.get("INFERENCE_MAX_TOKENS", "96"))
 # confidence drops below ADAPTIVE_THETA, escalate to the RAG backup (full retrieved context on
 # the same engine) and flag it in the UI. "" / unset disables escalation (pure single-cart CAG).
 ADAPTIVE_THETA = os.environ.get("ADAPTIVE_THETA", "")
+# --- QRC hybrid serving (k=3 accuracy fix) ----------------------------------------------------
+# Composing k>1 solo-encoded carts interferes REGARDLESS of compression (PLAN decisions 2026-09-03),
+# so hybrid mode keeps the TOP-1 retrieved doc as the resident cart and routes the OTHER docs' answer-
+# bearing chunks in as small real-token context (see app/chunking.py — the shared core, byte-identical
+# to what the bench measures).
+#   QRC_MODE=hybrid (default) -> top-1 cart + query-routed chunks of docs 2..k;
+#   QRC_MODE=off              -> legacy multi-cart serve (every retrieved doc_id handed over, no context).
+QRC_MODE = os.environ.get("QRC_MODE", "hybrid").lower()
+# Chunk-description sidecar generation at onboard (one cart-resident generation per doc yields a short
+# line per chunk, folded into the chunk's INDEX text as routing metadata — never served). "on" (default)
+# / "off". Only runs on the vllm backend when QRC_MODE=hybrid (see routers/jobs.py).
+QRC_CHUNK_DESC = os.environ.get("QRC_CHUNK_DESC", "on").lower()
+# Token budget for the routed context PER doc. The canonical default lives in chunking.CHUNK_BUDGET_TOKENS
+# (one source of truth shared with the bench); this is only an optional env override for tuning without
+# touching the shared core.
+from . import chunking as _chunking  # noqa: E402 — after os import; pure module, no app/torch imports
+QRC_BUDGET_TOKENS = int(os.environ.get("QRC_BUDGET_TOKENS", str(_chunking.CHUNK_BUDGET_TOKENS)))
+
 # Control-plane retrieval backend: "hybrid" (the DEFAULT — industry-standard bm25s lexical + fastembed
 # dense fused by RRF, in-process, torch-free) or "fused" (the GPU-box BM25+dense+rerank pipeline).
 # "bm25" is kept as a legacy alias -> hybrid (the hand-rolled pure-python scorer it named is replaced;

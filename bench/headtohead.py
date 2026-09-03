@@ -10,6 +10,12 @@ fleet probe.
 Arms (bench_fleet parity):
   cart      — retrieve top-k doc_ids (timed, INSIDE the request e2e) then /query_stream with
               those doc_ids: the resident-KV serve path, no per-query document prefill.
+  qrc       — hybrid QRC serving: SAME retrieval, then the TOP doc serves as the resident cart and
+              docs 2..k route their query-selected real-text CHUNKS in as `context` on /query_stream
+              (doc_ids=[top], context=routed chunks). This is the fix for k=3 multi-cart interference:
+              one proven-solo resident cart + small real-token context instead of composed carts. At
+              topk=1 the routed context is empty, so qrc degenerates to the cart arm. Optionally uses
+              the chunkdesc sidecar (qrc_chunks.json) to sharpen chunk routing.
   rag_churn — SAME retrieval, then /rag_query_stream with the top-k docs' full text as `context`,
               prefixed with a per-request unique nonce line "[req-<uuid>]\\n". The RagReq endpoint
               has NO cache-salt field (checked: ml_service/vllm_inference.py RagReq = context,
@@ -33,7 +39,9 @@ bench_fleet measurement definitions ported verbatim:
   * the ANCHOR-row statistic is p50 (median) for ttft/e2e and wall-clock qps — matched to
     bench_fleet's _excel_rows, which emits ttft_p50 / lat_p50 (NOT the mean).
 
-Phases:  onboard | sweep | accuracy   (plus --selftest, GPU-free, network-free).
+Phases:  onboard | chunkdesc | sweep | accuracy   (plus --selftest, GPU-free, network-free).
+  chunkdesc builds the QRC chunk-description sidecar (qrc_chunks.json) — one cart-resident generation
+  per corpus doc describing its chunks — measuring the onboarding-cost delta of descriptions.
 
 Config (env/flags): ML_AUTH_TOKEN (env, never printed), --serve-url / --onboard-url,
   --gen-tokens (128), --topk (3), --seed, --conc-list, --arms.
@@ -57,6 +65,42 @@ from pathlib import Path
 
 BENCH_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = BENCH_DIR / "results"
+# The chunk-description sidecar the chunkdesc phase writes and the qrc arm reads: {doc_id: [desc,...]}
+# parallel to chunking.chunk_spans(doc_text). Optional — qrc routes on chunk text alone when absent.
+CHUNK_DESCS_PATH = BENCH_DIR / "qrc_chunks.json"
+
+
+def _load_chunking():
+    """The shared QRC core (backend/app/chunking.py), imported robustly: a bare `import chunking`
+    on the box (where it is synced beside the bench) or, in the repo layout, loaded from backend/app
+    BY FILE PATH — deliberately not via sys.path, because that dir holds app modules (email.py,
+    config.py) that would SHADOW stdlib/other packages. Deferred into a function so a phase that never
+    touches QRC (onboard/sweep-without-qrc) doesn't pay the import — and so the module imports cleanly
+    on a box that hasn't synced chunking.py yet."""
+    try:
+        import chunking  # box layout: chunking.py beside the bench
+        return chunking
+    except ImportError:
+        import importlib.util as ilu
+        path = BENCH_DIR.parent / "backend" / "app" / "chunking.py"
+        spec = ilu.spec_from_file_location("chunking", path)
+        mod = ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+
+def load_chunk_descs(path: Path = CHUNK_DESCS_PATH) -> dict | None:
+    """The chunk-description sidecar {doc_id: [desc,...]} if present, else None (qrc then routes on
+    chunk text alone — a missing/partial sidecar can only fail to help routing, never break it)."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"[bench] WARNING: could not read chunk-desc sidecar {path}: {exc} — "
+              f"qrc will route on chunk text alone", flush=True)
+        return None
+
 
 # ------------------------------------------------------------------ defaults (bench_fleet parity)
 DEFAULT_CONC = [1, 8, 32, 64, 128]
@@ -80,7 +124,7 @@ SETTLE_S = 1.0
 
 # Per-arm seed offsets so each (arm, conc) cell samples a reproducible-but-distinct question
 # stream (bench_fleet._ARM_SEED).
-_ARM_SEED = {"cart": 1, "rag_churn": 2, "rag_hot": 3}
+_ARM_SEED = {"cart": 1, "rag_churn": 2, "rag_hot": 3, "qrc": 4}
 
 
 # ------------------------------------------------------------------ stats (bench_fleet parity)
@@ -211,18 +255,31 @@ class ServeClient:
 
 # ------------------------------------------------------------------ one request (arm-specific)
 async def one_request(client: ServeClient, retriever, arm: str, q: dict, gen_tokens: int,
-                      topk: int) -> dict:
+                      topk: int, descs_by_doc: dict | None = None) -> dict:
     """One measured request for `arm`. Retrieval is TIMED and counted INSIDE the request e2e (the
     honest end-to-end a user sees: retrieve then generate) AND reported separately as retrieval_ms.
-    cart -> /query_stream with the retrieved doc_ids; rag_churn/rag_hot -> /rag_query_stream with
-    the retrieved docs' text as context (churn arm prefixes a per-request nonce so the prefix cache
-    can never hit). Returns a per-request record with ttft/e2e/retrieval_ms/text/expect/error."""
+    cart -> /query_stream with the retrieved doc_ids; qrc -> /query_stream with the TOP doc as the
+    resident cart plus docs[1:]' query-routed real-text chunks as `context` (the hybrid serve path);
+    rag_churn/rag_hot -> /rag_query_stream with the retrieved docs' text as context (churn arm
+    prefixes a per-request nonce so the prefix cache can never hit). `descs_by_doc` (qrc only) is the
+    onboarding chunk-description sidecar {doc_id: [desc,...]}, folded into chunk INDEX text to sharpen
+    routing (None -> route on chunk text alone). Returns a per-request record with
+    ttft/e2e/retrieval_ms/text/expect/error."""
     t_retr = time.perf_counter()
     doc_ids, context = retriever.retrieve_context(q["q"], topk)
+    if arm == "qrc":
+        # The TOP doc serves as the resident cart; the rest route their answer-bearing chunks in as
+        # real-token context. At topk=1 doc_ids[1:] is empty -> context '' -> the qrc arm degenerates
+        # to the pure cart arm (identical request), which is the intended edge behavior.
+        context = retriever.route_chunks_context(q["q"], doc_ids[1:], descs_by_doc=descs_by_doc)
     retrieval_ms = (time.perf_counter() - t_retr) * 1000
     if arm == "cart":
         res = await client.stream("/query_stream", {
             "doc_ids": doc_ids, "question": q["q"], "max_tokens": gen_tokens})
+    elif arm == "qrc":
+        res = await client.stream("/query_stream", {
+            "doc_ids": [doc_ids[0]], "context": context, "question": q["q"],
+            "max_tokens": gen_tokens})
     else:
         if arm == "rag_churn":
             # NO per-request cache-salt field exists on RagReq (checked), so force honest churn
@@ -242,12 +299,13 @@ async def one_request(client: ServeClient, retriever, arm: str, q: dict, gen_tok
 # ------------------------------------------------------------------ one cell (closed loop)
 async def run_cell(client: ServeClient, retriever, arm: str, conc: int, questions: list[dict],
                    gen_tokens: int, topk: int, zipf_s: float, seed: int,
-                   reqs_override: int | None = None) -> dict:
+                   reqs_override: int | None = None, descs_by_doc: dict | None = None) -> dict:
     """One (arm, conc) measurement cell: closed loop at exactly `conc` in-flight, reqs=max(32,3*conc),
     a discarded warmup of min(conc,8), Zipf(s) question sampling seeded per cell. Emits the per-cell
     row (qps from wall over completed reqs, ttft/e2e p50 + p95, retrieval_ms p50, errors, and the
     4-request fact spot-check). Verbatim port of bench_fleet._run_cell adapted to the HTTP arms.
-    reqs_override is ONLY for --selftest (a tiny cell); production always uses max(32,3*conc)."""
+    reqs_override is ONLY for --selftest (a tiny cell); production always uses max(32,3*conc).
+    descs_by_doc (qrc arm only) is the chunk-description sidecar passed into routing."""
     reqs = reqs_override if reqs_override is not None else max(32, 3 * conc)
     rng = random.Random(seed)
     sem = asyncio.Semaphore(conc)
@@ -256,7 +314,7 @@ async def run_cell(client: ServeClient, retriever, arm: str, conc: int, question
     async def worker(measured: bool) -> None:
         async with sem:
             q = questions[zipf_pick(rng, len(questions), zipf_s)]
-            r = await one_request(client, retriever, arm, q, gen_tokens, topk)
+            r = await one_request(client, retriever, arm, q, gen_tokens, topk, descs_by_doc)
             if measured:
                 results.append(r)
 
@@ -358,6 +416,54 @@ async def phase_onboard(args) -> None:
         indent=2), encoding="utf-8")
 
 
+async def phase_chunkdesc(args) -> None:
+    """Build the QRC chunk-description sidecar — the onboarding-cost delta of descriptions.
+    For each corpus doc, ONE cart-resident generation describes every chunk: the doc's OWN cart
+    answers about its OWN content (doc_ids=[doc_id]), so the model reads the full document from its
+    resident KV, not just the snippet. chunking.chunk_desc_prompt builds the numbered-chunk prompt;
+    chunking.parse_chunk_descs turns the reply into a descs list parallel to chunk_spans(text). A
+    parse failure degrades that doc to all-'' descs (never fatal — routing falls back to chunk text).
+    Writes BENCH_DIR/qrc_chunks.json = {doc_id: [desc,...]} and prints per-doc timing + a DONE line
+    with total wall and s/doc so the description onboarding cost is measured, not guessed."""
+    chunking = _load_chunking()
+    doc_ids, texts = load_corpus(BENCH_DIR / "corpus.jsonl")
+    client = ServeClient(args.serve_url, args.onboard_url, args.req_timeout)
+    out: dict[str, list[str]] = {}
+    parse_fails = 0
+    t0 = time.perf_counter()
+    try:
+        for doc_id, text in zip(doc_ids, texts, strict=True):
+            n_chunks = len(chunking.chunk_spans(text))
+            prompt = chunking.chunk_desc_prompt(text)
+            td = time.perf_counter()
+            # Cart-resident: the doc's own cart answers about its own content. max_tokens=384 gives
+            # room for one short line per chunk (the prompt asks for exactly that).
+            res = await client.stream("/query_stream", {
+                "doc_ids": [doc_id], "question": prompt, "max_tokens": 384})
+            el = time.perf_counter() - td
+            if res["error"]:
+                # A serve error -> empty descs for this doc (routing still works on chunk text).
+                out[doc_id] = [""] * n_chunks
+                parse_fails += 1
+                print(f"[bench:chunkdesc] {doc_id}: {n_chunks} chunks {el:.1f}s ERROR "
+                      f"{res['error']} — empty descs", flush=True)
+                continue
+            descs = chunking.parse_chunk_descs(res["text"], n_chunks)
+            out[doc_id] = descs
+            filled = sum(1 for d in descs if d)
+            if filled == 0 and n_chunks:
+                parse_fails += 1
+            print(f"[bench:chunkdesc] {doc_id}: {n_chunks} chunks {el:.1f}s "
+                  f"({filled}/{n_chunks} described)", flush=True)
+    finally:
+        await client.aclose()
+    wall = time.perf_counter() - t0
+    CHUNK_DESCS_PATH.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+    n = len(doc_ids)
+    print(f"[bench:chunkdesc] DONE {n} docs in {wall:.1f}s ({wall / n:.2f} s/doc), "
+          f"{parse_fails} doc(s) with no parsed descriptions -> {CHUNK_DESCS_PATH}", flush=True)
+
+
 async def phase_sweep(args, stop: asyncio.Event) -> None:
     """The concurrency grid: for each conc, for each arm, one closed-loop cell. Persists after every
     cell (a mid-sweep death must not strand finished cells), writes sweep.json (raw, incl. rag_hot),
@@ -366,6 +472,9 @@ async def phase_sweep(args, stop: asyncio.Event) -> None:
     questions = load_questions(BENCH_DIR / "questions.json")
     retriever = build_retriever(doc_ids, texts, dense=not args.no_dense, cache_dir=args.cache_dir)
     client = ServeClient(args.serve_url, args.onboard_url, args.req_timeout)
+    # The qrc arm folds the chunk-description sidecar into routing when it exists (built by the
+    # chunkdesc phase); absent, it routes on chunk text alone.
+    descs_by_doc = load_chunk_descs() if "qrc" in args.arms else None
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RESULTS_DIR / "sweep.json"
     cells: list[dict] = []
@@ -378,7 +487,8 @@ async def phase_sweep(args, stop: asyncio.Event) -> None:
                     raise KeyboardInterrupt
                 cells.append(await run_cell(
                     client, retriever, arm, conc, questions, args.gen_tokens, args.topk,
-                    args.zipf_s, seed=conc * 1000 + _ARM_SEED.get(arm, 9)))
+                    args.zipf_s, seed=conc * 1000 + _ARM_SEED.get(arm, 9),
+                    descs_by_doc=descs_by_doc if arm == "qrc" else None))
                 # Persist after EVERY cell (partial-safe), then settle + drain before the next.
                 _write_sweep(out_path, cells, args, partial=True)
                 await asyncio.sleep(SETTLE_S)
@@ -406,38 +516,44 @@ def _write_sweep(path: Path, cells: list[dict], args, partial: bool) -> None:
 
 
 async def phase_accuracy(args) -> None:
-    """Every question once per arm at conc=1 (cart + rag_churn), full answers preserved for the
-    operator's manual judgment. Dumps accuracy.json:
-      [{doc_id, q, expect_substring, cart_answer, rag_answer, cart_ok, rag_ok}]."""
+    """Every question once per arm at conc=1 — cart, qrc, rag_churn — full answers preserved for the
+    operator's manual judgment. The qrc arm folds the chunk-description sidecar (qrc_chunks.json)
+    into routing when present, else routes on chunk text alone. Dumps accuracy.json:
+      [{doc_id, q, expect_substring, cart_answer/cart_ok, qrc_answer/qrc_ok, rag_answer/rag_ok, ...}]."""
     doc_ids, texts = load_corpus(BENCH_DIR / "corpus.jsonl")
     questions = load_questions(BENCH_DIR / "questions.json")
     retriever = build_retriever(doc_ids, texts, dense=not args.no_dense, cache_dir=args.cache_dir)
     client = ServeClient(args.serve_url, args.onboard_url, args.req_timeout)
+    descs_by_doc = load_chunk_descs()  # None -> qrc routes on chunk text alone
     rows: list[dict] = []
     try:
         for q in questions:
             cart = await one_request(client, retriever, "cart", q, args.gen_tokens, args.topk)
+            qrc = await one_request(client, retriever, "qrc", q, args.gen_tokens, args.topk,
+                                    descs_by_doc)
             rag = await one_request(client, retriever, "rag_churn", q, args.gen_tokens, args.topk)
             exp = q.get("expect_substring", "")
             rows.append({
                 "doc_id": q.get("doc_id"), "q": q["q"], "expect_substring": exp,
-                "cart_answer": cart["text"], "rag_answer": rag["text"],
+                "cart_answer": cart["text"], "qrc_answer": qrc["text"], "rag_answer": rag["text"],
                 "cart_ok": bool(exp) and exp in cart["text"],
+                "qrc_ok": bool(exp) and exp in qrc["text"],
                 "rag_ok": bool(exp) and exp in rag["text"],
-                "cart_error": cart["error"], "rag_error": rag["error"],
+                "cart_error": cart["error"], "qrc_error": qrc["error"], "rag_error": rag["error"],
             })
-            print(f"[bench:accuracy] {q.get('doc_id')}: "
-                  f"cart_ok={rows[-1]['cart_ok']} rag_ok={rows[-1]['rag_ok']}", flush=True)
+            print(f"[bench:accuracy] {q.get('doc_id')}: cart_ok={rows[-1]['cart_ok']} "
+                  f"qrc_ok={rows[-1]['qrc_ok']} rag_ok={rows[-1]['rag_ok']}", flush=True)
     finally:
         await client.aclose()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     (RESULTS_DIR / "accuracy.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False),
                                                encoding="utf-8")
     cart_ok = sum(1 for r in rows if r["cart_ok"])
+    qrc_ok = sum(1 for r in rows if r["qrc_ok"])
     rag_ok = sum(1 for r in rows if r["rag_ok"])
     print(f"[bench:accuracy] DONE {len(rows)} questions: cart {cart_ok}/{len(rows)} substring-ok, "
-          f"rag {rag_ok}/{len(rows)} substring-ok (full answers in results/accuracy.json for "
-          f"manual judgment)", flush=True)
+          f"qrc {qrc_ok}/{len(rows)} substring-ok, rag {rag_ok}/{len(rows)} substring-ok "
+          f"(full answers in results/accuracy.json for manual judgment)", flush=True)
 
 
 # ------------------------------------------------------------------ argparse / main
@@ -448,7 +564,7 @@ def _parse_conc(s: str) -> list[int]:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("phase", nargs="?", choices=["onboard", "sweep", "accuracy"],
+    ap.add_argument("phase", nargs="?", choices=["onboard", "chunkdesc", "sweep", "accuracy"],
                     help="which phase to run (omit with --selftest)")
     ap.add_argument("--selftest", action="store_true",
                     help="run the GPU-free, network-free self-test and exit")
@@ -483,7 +599,8 @@ def main(argv: list[str] | None = None) -> int:
         from bench.selftest import run_selftest
         return run_selftest()
     if not args.phase:
-        print("error: a phase (onboard|sweep|accuracy) or --selftest is required", file=sys.stderr)
+        print("error: a phase (onboard|chunkdesc|sweep|accuracy) or --selftest is required",
+              file=sys.stderr)
         return 2
     # Fold the base --seed into the per-cell seeds so a run is reproducible AND re-seedable.
     if args.seed:
@@ -503,6 +620,8 @@ def main(argv: list[str] | None = None) -> int:
             pass  # Windows / no-signal contexts: KeyboardInterrupt still propagates.
         if args.phase == "onboard":
             await phase_onboard(args)
+        elif args.phase == "chunkdesc":
+            await phase_chunkdesc(args)
         elif args.phase == "sweep":
             await phase_sweep(args, stop)
         elif args.phase == "accuracy":

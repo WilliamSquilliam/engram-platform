@@ -23,8 +23,29 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from pathlib import Path
 
 logger = logging.getLogger("bench.retriever")
+
+# ---- shared QRC core ------------------------------------------------------------------------
+# chunking.py is the byte-identical routing core the control plane runs (backend/app/chunking.py).
+# On the GPU box the bench syncs that file next to this one, so a bare `import chunking` wins; in the
+# repo layout it lives under backend/app, so fall back to loading THAT FILE BY PATH — deliberately
+# NOT by putting backend/app on sys.path, because that dir holds app modules (email.py, config.py,
+# ...) that would SHADOW stdlib/other packages (bm25s imports importlib.metadata -> email, and a
+# backend/app/email.py on the path breaks it). Loading by spec keeps the resolution surgical: only
+# `chunking` is bound, nothing else on that dir leaks in. chunking.py is pure (no app imports), so a
+# standalone load is safe. Either way the routed CHUNK SELECTION the bench measures is the exact
+# selection the product serves.
+try:
+    import chunking  # box layout: chunking.py synced beside bench/retriever.py
+except ImportError:
+    import importlib.util as _ilu
+
+    _chunking_path = Path(__file__).resolve().parent.parent / "backend" / "app" / "chunking.py"
+    _spec = _ilu.spec_from_file_location("chunking", _chunking_path)
+    chunking = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(chunking)
 
 # Reciprocal Rank Fusion constant — the standard k=60 (retrieval.py._RRF_K). Dampens how much any
 # one ranked list's top positions dominate the fused score.
@@ -190,3 +211,26 @@ class HybridRetriever:
         the SAME text as `context`. Joined with '\\n\\n' exactly as retrieval.retrieve_context."""
         ids = self.retrieve(question, k)
         return ids, "\n\n".join(self._by_id.get(d, "") for d in ids)
+
+    def route_chunks_context(self, question: str, doc_ids: list[str], budget_tokens: int | None = None,
+                             descs_by_doc: dict[str, list[str]] | None = None) -> str:
+        """QRC hybrid: the routed real-text context for the NON-top retrieved docs (`doc_ids` are
+        docs 2..k — the top doc is served as the resident cart, not routed here). For each doc, its
+        own corpus text plus the optional chunk descriptions (descs_by_doc[doc_id], parallel to
+        chunking.chunk_spans) go through the SHARED core's query-routed chunk selection under a token
+        budget, and the selected chunks are composed into one context string exactly as the control
+        plane composes it. Reuses THIS retriever's fastembed instance (the same embedder the doc
+        stage built) so no second model is loaded and the chunk-dense ranking matches prod; when the
+        dense stage is off/unavailable the routing degrades to bm25s-only, same as retrieval. Empty
+        doc_ids (e.g. topk=1) -> '' (the qrc arm then degenerates to the pure cart arm)."""
+        if not doc_ids:
+            return ""
+        descs_by_doc = descs_by_doc or {}
+        docs = [{"doc_id": d, "text": self._by_id.get(d, ""), "descs": descs_by_doc.get(d)}
+                for d in doc_ids if self._by_id.get(d, "")]
+        # The SAME embedder instance the doc retriever already holds (module singleton), or None when
+        # dense is off/unavailable — never construct a second embedder for the chunk stage.
+        embedder = _dense_embedder(self.cache_dir) if self.dense else None
+        kw = {} if budget_tokens is None else {"budget_tokens": budget_tokens}
+        routed = chunking.route_chunks(question, docs, embedder=embedder, **kw)
+        return chunking.compose_context(routed)

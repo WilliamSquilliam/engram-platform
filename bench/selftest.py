@@ -19,12 +19,18 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from pathlib import Path
+
+# A path that will never exist — used to prove load_chunk_descs tolerates a missing sidecar.
+BENCH_DIR_MISSING = Path(__file__).resolve().parent / "no_such_qrc_chunks_sidecar.json"
 
 
 # --- stub retriever (no bm25s / fastembed) ---------------------------------------------------
 class _StubRetriever:
     """Returns the first `k` doc_ids and a joined context — enough to exercise the request path and
-    the churn-nonce plumbing without importing the real (heavy) retriever."""
+    the churn-nonce plumbing without importing the real (heavy) retriever. route_chunks_context is
+    stubbed too (the qrc arm calls it) — it returns a joined slice of the non-top docs' text so the
+    qrc request carries a non-empty context, without pulling in bm25s/fastembed/chunking."""
 
     def __init__(self):
         self.doc_ids = [f"stubdoc_{i}" for i in range(5)]
@@ -33,6 +39,13 @@ class _StubRetriever:
     def retrieve_context(self, question: str, k: int):
         ids = self.doc_ids[:k]
         return ids, "\n\n".join(self.texts[d] for d in ids)
+
+    def route_chunks_context(self, question, doc_ids, budget_tokens=None, descs_by_doc=None):
+        # Mirror HybridRetriever.route_chunks_context's contract shape: empty doc_ids -> '' (qrc
+        # degenerates to cart at topk=1), else the non-top docs' text joined as the routed context.
+        if not doc_ids:
+            return ""
+        return "\n\n".join(self.texts.get(d, "") for d in doc_ids)
 
 
 # --- stub SSE server (Starlette ASGI app, driven in-process via httpx ASGITransport) ---------
@@ -75,6 +88,12 @@ def _build_stub_app():
     async def query_stream(request):
         await _enter()
         body = await request.json()
+        # QRC hybrid: /query_stream now accepts an optional `context` (routed real-text chunks of the
+        # non-top docs) alongside doc_ids. Record per-request whether it carried a non-empty context
+        # so the selftest can assert the qrc arm actually sends routed context and the cart arm never
+        # does. n_docs is tracked too (qrc serves exactly ONE resident cart: doc_ids=[top]).
+        state.setdefault("qs_ctx_flags", []).append(bool(body.get("context", "")))
+        state.setdefault("qs_ndocs", []).append(len(body.get("doc_ids", [])))
         try:
             n = min(int(body.get("max_tokens", 8)), 8)
             return StreamingResponse(_sse(n), media_type="text/event-stream",
@@ -164,12 +183,14 @@ async def _run() -> int:
     check(resp["n_cartridges"] == 2, "onboard returns n_cartridges for the batch")
     check(state["onboard_docs"] == 2, "onboard_cag received the docs")
 
-    # --- tiny sweep: conc 1,2, 6 reqs per cell, all three arms ---
+    # --- tiny sweep: conc 1,2, 6 reqs per cell, all four arms (cart, qrc, rag_churn, rag_hot) ---
     all_cells: list[dict] = []
     for conc in (1, 2):
         state["peak"] = 0  # reset the concurrency high-water mark per cell group
-        for arm in ("cart", "rag_churn", "rag_hot"):
+        for arm in ("cart", "qrc", "rag_churn", "rag_hot"):
             state["nonce_flags"] = []
+            state["qs_ctx_flags"] = []
+            state["qs_ndocs"] = []
             cell = await h2h.run_cell(serve, retriever, arm, conc, questions,
                                       gen_tokens=6, topk=3, zipf_s=1.1, seed=conc,
                                       reqs_override=6)
@@ -184,6 +205,17 @@ async def _run() -> int:
             if arm == "rag_hot":
                 check(state["nonce_flags"] and not any(state["nonce_flags"]),
                       "rag_hot context carries NO nonce (prefix cache free to hit)")
+            # qrc plumbing (topk=3): each qrc request hits /query_stream with EXACTLY one resident
+            # cart (the top doc) and a NON-empty routed context (docs 2..k's chunks). The cart arm
+            # hits /query_stream with the doc_ids and NO context.
+            if arm == "qrc":
+                check(state["qs_ctx_flags"] and all(state["qs_ctx_flags"]),
+                      "qrc /query_stream carries routed context (docs 2..k) at topk=3")
+                check(state["qs_ndocs"] and all(n == 1 for n in state["qs_ndocs"]),
+                      "qrc serves exactly ONE resident cart (doc_ids=[top]) per request")
+            if arm == "cart":
+                check(state["qs_ctx_flags"] and not any(state["qs_ctx_flags"]),
+                      "cart /query_stream carries NO context (resident-KV only)")
             # stats math + row schema.
             check(cell["reqs"] == 6, f"reqs honored (6) for the selftest cell arm={arm}")
             check(cell["ok"] == 6, f"all 6 requests ok for arm={arm} conc={conc}")
@@ -221,10 +253,36 @@ async def _run() -> int:
           "anchor row schema == per_model_anchor exactly")
     check(all(r["model"] == "Command-A-Plus" and r["instance"] == "lambda_2x_h100_sxm5"
               for r in rows), "anchor rows carry the estimator model/instance identity")
-    # anchor uses the rag_CHURN arm, never rag_hot.
+    # anchor uses the rag_CHURN arm, never rag_hot (qrc is a separate arm, also out of the anchor).
     churn = {c["conc"]: c for c in all_cells if c["arm"] == "rag_churn"}
     check(all(r["rag_ttft_ms"] == churn[r["conc"]]["ttft_p50"] for r in rows),
           "anchor rag_* comes from the rag_churn arm's p50 (anchor-consistent)")
+
+    # --- qrc degenerates to the cart arm at topk=1 (empty routed context) ---
+    state["qs_ctx_flags"] = []
+    q1 = await h2h.one_request(serve, retriever, "qrc", questions[0], gen_tokens=6, topk=1)
+    check(q1["error"] is None and state["qs_ctx_flags"] == [False],
+          "qrc at topk=1 sends NO context (degenerates to the cart arm)")
+
+    # --- chunkdesc parse path (the shared QRC core, no GPU) ---
+    chunking = h2h._load_chunking()
+    doc_text = ("Alpha beta gamma delta. " * 20 + "The stub fact is 42. ") + ("Epsilon zeta. " * 20)
+    n_chunks = len(chunking.chunk_spans(doc_text))
+    prompt = chunking.chunk_desc_prompt(doc_text)
+    check("chunk" in prompt.lower() and str(n_chunks) in prompt,
+          "chunk_desc_prompt lists every chunk by ordinal")
+    # A well-formed numbered reply parses to one desc per chunk...
+    good_reply = "\n".join(f"{i + 1}. describes chunk {i + 1}" for i in range(n_chunks))
+    descs = chunking.parse_chunk_descs(good_reply, n_chunks)
+    check(len(descs) == n_chunks and all(descs),
+          "parse_chunk_descs maps a well-formed numbered reply to one desc per chunk")
+    # ...and a garbled reply degrades to empty descs (never fatal — routing falls back to text).
+    bad = chunking.parse_chunk_descs("(model produced no numbered lines)", n_chunks)
+    check(len(bad) == n_chunks and not any(bad),
+          "parse_chunk_descs degrades a garbled reply to all-empty descs (never fatal)")
+    # The sidecar loader tolerates a missing file (qrc then routes on chunk text alone).
+    check(h2h.load_chunk_descs(BENCH_DIR_MISSING) is None,
+          "load_chunk_descs returns None for a missing sidecar (qrc routes on chunk text)")
 
     await client.aclose()
 

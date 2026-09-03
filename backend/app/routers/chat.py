@@ -32,6 +32,18 @@ def _enforce_query_limit(db: Session, corpus: Corpus) -> None:
         limits.check_query_limit(tenant, usage.tenant_query_count_this_month(db, corpus.tenant_id))
 
 
+def _hybrid_split(corpus_id: str, question: str, doc_ids: list[str]) -> tuple[list[str], str]:
+    """QRC hybrid serving split. In hybrid mode with >1 retrieved doc, keep the TOP-1 doc as the
+    resident cart and route the OTHER docs' answer-bearing chunks into a small real-token `context`:
+    returns ([doc_ids[0]], routed_context). QRC_MODE=off (or a single doc) is the legacy multi-cart
+    serve — the full doc_ids list, empty context. The caller still reports ALL doc_ids as used_docs /
+    sources (the evidence the user sees is unchanged; only the serving mechanism differs)."""
+    if config.QRC_MODE == "hybrid" and len(doc_ids) > 1:
+        context = retrieval.route_chunks_context(corpus_id, question, doc_ids[1:])
+        return [doc_ids[0]], context
+    return doc_ids, ""
+
+
 def _answer(corpus: Corpus, req: ChatReq, db: Session) -> ChatResp:
     if corpus.status != "ready":
         raise HTTPException(400, f"Document base not ready (status={corpus.status})")
@@ -54,8 +66,12 @@ def _answer(corpus: Corpus, req: ChatReq, db: Session) -> ChatResp:
             doc_ids = retrieval.retrieve(corpus.id, req.question, req.k)
             if not doc_ids:
                 raise HTTPException(404, "no documents to retrieve for this document base")
-        result = ml_client.inference_query(doc_ids, req.question, config.INFERENCE_MAX_TOKENS,
-                                           history=[m.model_dump() for m in req.history])
+        # QRC hybrid split: serve the top-1 cart + routed chunks of docs 2..k as `context` (hybrid), or
+        # the full doc_ids list with no context (off). used_docs/sources still report ALL doc_ids below.
+        serve_ids, context = _hybrid_split(corpus.id, req.question, doc_ids)
+        result = ml_client.inference_query(serve_ids, req.question, config.INFERENCE_MAX_TOKENS,
+                                           history=[m.model_dump() for m in req.history],
+                                           context=context)
         # tier="cartridge": the non-stream serve path always answers cart-alone (adaptive escalation
         # is deliberately STREAM-ONLY — see chat_stream — so a one-shot answer never silently swaps to
         # the RAG backup). tenant_id attributes this query to the corpus's tenant for per-tenant billing.
@@ -148,11 +164,16 @@ def chat_stream(
             raise HTTPException(404, "no documents to retrieve for this document base")
     sources = retrieval.doc_sources(corpus.id, doc_ids)
 
+    # QRC hybrid split: serve the top-1 cart + routed chunks of docs 2..k as `context` (hybrid), or the
+    # full doc_ids list with no context (off). The head frame + sources below still report ALL doc_ids —
+    # the evidence the user sees is unchanged; only the serve payload's ids/context differ.
+    serve_ids, context = _hybrid_split(corpus.id, req.question, doc_ids)
+
     _theta = config.ADAPTIVE_THETA
     theta = float(_theta) if _theta not in (None, "") else None
     url = f"{config.INFERENCE_SERVICE_URL}/query_stream"
-    payload = {"doc_ids": doc_ids, "question": req.question,
-               "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history}
+    payload = {"doc_ids": serve_ids, "question": req.question,
+               "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history, "context": context}
 
     async def gen():
         # head carries used_docs so the UI can PIN them on follow-up turns (skip re-retrieval) and

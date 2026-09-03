@@ -22,7 +22,7 @@ import re
 import threading
 from pathlib import Path
 
-from . import config, ml_client
+from . import chunking, config, ml_client
 from .storage import storage
 
 logger = logging.getLogger(__name__)
@@ -103,6 +103,25 @@ def _descriptions_for_corpus(corpus_id: str, tenant_id: str) -> dict[str, str]:
     finally:
         db.close()
     return out
+
+
+def _chunk_descs_for_corpus(corpus_id: str) -> dict[str, list[str]]:
+    """{cart_id: [desc, ...]} from the QRC chunk-description sidecar (qrc_chunks.json), or {} when the
+    sidecar is absent/unparseable. The descs are parallel to chunking.chunk_spans(served_text) and are
+    folded into each chunk's INDEX text only (routing metadata, never served). Best-effort: a malformed
+    sidecar degrades to no descs (routing falls back to the chunk's own text — never hurts)."""
+    raw = storage.read_chunk_sidecar_bytes(corpus_id)
+    if not raw:
+        return {}
+    try:
+        import json
+        data = json.loads(raw)
+        # Keep only well-shaped entries: a cart id mapping to a list of strings.
+        return {k: [str(x) for x in v] for k, v in data.items() if isinstance(v, list)}
+    except Exception as exc:  # noqa: BLE001 — a bad sidecar must never break retrieval
+        logger.warning("QRC chunk sidecar unparseable for corpus %s (routing desc-less): %s",
+                       corpus_id, exc)
+        return {}
 
 
 def _tokens(s: str) -> list[str]:
@@ -199,8 +218,9 @@ def _lexical_ranking(query: str, doc_ids: list[str], texts: list[str]) -> list[s
 # --------------------------------------------------------------------------- per-corpus index cache
 class _CorpusIndex:
     """A built hybrid index for one corpus: the ordered doc_ids, their index texts (filename +
-    description + extracted text), the per-id served text, the invalidation signature it was
-    built under — and the BUILT ranking artifacts (bm25 index + normalized doc embeddings).
+    description + extracted text), the per-id served text, the per-id QRC chunk descs (from the
+    sidecar), the invalidation signature it was built under — and the BUILT ranking artifacts (bm25
+    index + normalized doc embeddings).
 
     The artifacts are built HERE, once per (re)build, because the per-query path used to
     re-tokenize+re-index bm25 AND re-embed every corpus document on every query — ~9s/query
@@ -208,12 +228,17 @@ class _CorpusIndex:
     A query now costs one query-tokenize + one query-embed + ranking math. Rebuilds when the
     signature changes (see _corpus_index)."""
 
-    __slots__ = ("doc_ids", "index_texts", "texts", "signature", "bm25", "doc_vecs")
+    __slots__ = ("doc_ids", "index_texts", "texts", "chunk_descs", "signature", "bm25", "doc_vecs")
 
-    def __init__(self, doc_ids, index_texts, texts, signature):
+    def __init__(self, doc_ids, index_texts, texts, chunk_descs, signature):
         self.doc_ids = doc_ids
         self.index_texts = index_texts
         self.texts = texts
+        # {cart_id: [chunk_desc, ...]} from the QRC sidecar — descs parallel to
+        # chunking.chunk_spans(texts[cart_id]). Query-time route_chunks_context folds these into each
+        # chunk's index text. Chunk SPANS themselves are recomputed per query by chunking.route_chunks
+        # (~10-25 chunks over ONE doc — cheap), so they're not pre-built here (keeps build cost flat).
+        self.chunk_descs = chunk_descs
         self.signature = signature
         self.bm25 = None
         self.doc_vecs = None
@@ -269,14 +294,19 @@ _index_lock = threading.Lock()
 
 
 def _corpus_signature(corpus_id: str, tenant_id: str,
-                      descriptions: dict[str, str]) -> tuple:
-    """Cheap staleness signal for the cached index: the corpus's filenames plus each doc's description.
-    Adding/removing a doc changes the filename set; a fresh onboard that (re)writes descriptions
-    changes the description tuple — either invalidates the cache and forces a rebuild. Backend-agnostic
-    (no mtimes), so it works identically on the local and S3 stores."""
+                      descriptions: dict[str, str], sidecar_bytes: bytes) -> tuple:
+    """Cheap staleness signal for the cached index: the corpus's filenames, each doc's description, AND
+    the QRC chunk sidecar's size+hash. Adding/removing a doc changes the filename set; a fresh onboard
+    that (re)writes descriptions changes the description tuple; a fresh chunk sidecar changes its hash —
+    any of the three invalidates the cache and forces a rebuild (so newly-written chunk descs take
+    effect). Backend-agnostic (no mtimes; the sidecar hash is byte-identical local vs S3)."""
     filenames = tuple(sorted(storage.list_doc_filenames(corpus_id)))
     descs = tuple(sorted(descriptions.items()))
-    return (filenames, descs)
+    # A short blake2b of the sidecar bytes (plus its length) — cheap, collision-resistant enough for a
+    # staleness signal, and consistent across backends since both return the same bytes.
+    import hashlib
+    sidecar_sig = (len(sidecar_bytes), hashlib.blake2b(sidecar_bytes, digest_size=16).hexdigest())
+    return (filenames, descs, sidecar_sig)
 
 
 def _build_index_texts(corpus_id: str, tenant_id: str,
@@ -307,7 +337,8 @@ def _corpus_index(corpus_id: str, tenant_id: str) -> _CorpusIndex:
     """The cached-or-freshly-built index for a corpus, keyed by corpus_id and invalidated by the cheap
     signature (filenames + descriptions). Locked so two concurrent queries don't both rebuild."""
     descriptions = _descriptions_for_corpus(corpus_id, tenant_id)
-    signature = _corpus_signature(corpus_id, tenant_id, descriptions)
+    sidecar_bytes = storage.read_chunk_sidecar_bytes(corpus_id)
+    signature = _corpus_signature(corpus_id, tenant_id, descriptions, sidecar_bytes)
     cached = _index_cache.get(corpus_id)
     if cached is not None and cached.signature == signature:
         return cached
@@ -316,7 +347,8 @@ def _corpus_index(corpus_id: str, tenant_id: str) -> _CorpusIndex:
         if cached is not None and cached.signature == signature:
             return cached
         doc_ids, index_texts, texts = _build_index_texts(corpus_id, tenant_id, descriptions)
-        idx = _CorpusIndex(doc_ids, index_texts, texts, signature)
+        chunk_descs = _chunk_descs_for_corpus(corpus_id)
+        idx = _CorpusIndex(doc_ids, index_texts, texts, chunk_descs, signature)
         _index_cache[corpus_id] = idx
         return idx
 
@@ -405,6 +437,25 @@ def context_for(corpus_id: str, doc_ids: list[str]) -> str:
     if missing:
         raise KeyError(f"unknown doc_ids for this corpus: {missing}")
     return "\n\n".join(storage.read_text(corpus_id, by_id[d]) for d in doc_ids)
+
+
+def route_chunks_context(corpus_id: str, question: str, doc_ids: list[str]) -> str:
+    """QRC hybrid serving: the answer-bearing chunks of the ROUTED docs (docs 2..k) for `question`,
+    composed into the single small real-token context that rides alongside the top-1 resident cart.
+
+    Reuses the cached corpus index (one build shared with retrieve()), maps each doc_id to its SERVED
+    text (the same texts[cart_id] the cart holds) and its sidecar chunk descs, then defers all ranking
+    to chunking.route_chunks (bm25s + optional dense, per doc, under the config token budget) and joins
+    with chunking.compose_context. Deterministic; unknown doc_ids raise KeyError (mirrors context_for);
+    embed failures degrade INSIDE chunking (lexical-only), never raising here."""
+    idx = _corpus_index(corpus_id, _tenant_for_corpus(corpus_id))
+    missing = [d for d in doc_ids if d not in idx.texts]
+    if missing:
+        raise KeyError(f"unknown doc_ids for this corpus: {missing}")
+    docs = [{"doc_id": d, "text": idx.texts[d], "descs": idx.chunk_descs.get(d)} for d in doc_ids]
+    routed = chunking.route_chunks(question, docs, embedder=_dense_embedder(),
+                                   budget_tokens=config.QRC_BUDGET_TOKENS)
+    return chunking.compose_context(routed)
 
 
 def _doc_text(corpus_id: str, doc_id: str) -> str:

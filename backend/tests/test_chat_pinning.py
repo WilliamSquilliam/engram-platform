@@ -21,8 +21,10 @@ def _to_vllm(monkeypatch):
 
 @pytest.fixture()
 def fake_inference(monkeypatch):
-    """Stand-in for the vLLM Inference Service /query. Deterministic answer + minimal metrics."""
-    def _iq(doc_ids, question, max_tokens=96, history=None):
+    """Stand-in for the vLLM Inference Service /query. Deterministic answer + minimal metrics.
+    Accepts the QRC `context` kwarg (empty on this single-doc pinning path) so the stub matches
+    ml_client.inference_query's signature."""
+    def _iq(doc_ids, question, max_tokens=96, history=None, context=""):
         return {"answer": "pinned answer", "doc_ids": doc_ids,
                 "metrics": {"latency_ms": 8.0, "prompt_tokens": 10, "gen_tokens": 3}}
 

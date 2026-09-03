@@ -7,7 +7,7 @@ import secrets
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from .. import config, jobqueue, ml_client
+from .. import chunking, config, jobqueue, ml_client
 from ..audit import record_event
 from ..db import SessionLocal
 from ..deps import get_current_user, get_db
@@ -89,6 +89,41 @@ def _write_descriptions(db: Session, corpus_id: str, doc_ids: list[str]) -> None
         db.commit()
     except Exception as exc:  # noqa: BLE001 — descriptions are best-effort; never fail onboarding
         logger.warning("doc-description pass failed for corpus %s: %s", corpus_id, exc)
+
+
+def _write_chunk_descriptions(corpus_id: str, docs: list[dict]) -> None:
+    """Best-effort QRC chunk-description pass (sibling of _write_descriptions): for each onboarded doc,
+    ONE cart-resident generation asks the serving model to describe each chunk of that doc — riding the
+    JUST-BUILT cart (doc_ids=[cart_id]) so the model has the full document resident. The reply is parsed
+    into a descs list (parallel to chunking.chunk_spans(text)) and collected into {cart_id: descs}, then
+    written as the 'qrc_chunks.json' sidecar through the storage layer (never a served/listed document).
+
+    FULLY contained like the doc-description pass: any failure logs a warning and never fails onboarding.
+    Partial sidecars are fine — a doc that failed its generation is simply omitted, and retrieval routes
+    it desc-less (falling back to the chunk's own text, which can only fail to help, never hurt)."""
+    try:
+        import json
+        sidecar: dict[str, list[str]] = {}
+        for doc in docs:
+            cart_id, text = doc["doc_id"], doc["text"]
+            n_chunks = len(chunking.chunk_spans(text))
+            if n_chunks == 0:
+                continue
+            try:
+                # ONE generation per doc, served from its own just-built cart. max_tokens=384 leaves room
+                # for a short line per chunk (~10-25 chunks). A per-doc failure just omits that doc.
+                answer = ml_client.inference_query(
+                    doc_ids=[cart_id], question=chunking.chunk_desc_prompt(text), max_tokens=384,
+                ).get("answer", "")
+                descs = chunking.parse_chunk_descs(answer, n_chunks)
+                if any(descs):  # skip docs the model wholly garbled — no point storing all-empty
+                    sidecar[cart_id] = descs
+            except Exception as exc:  # noqa: BLE001 — one doc's failure never blocks the rest
+                logger.warning("chunk-description generation failed for cart %s: %s", cart_id, exc)
+        if sidecar:
+            storage.save_chunk_sidecar(corpus_id, json.dumps(sidecar).encode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — the whole pass is best-effort; never fail onboarding
+        logger.warning("chunk-description pass failed for corpus %s: %s", corpus_id, exc)
 
 
 def _run_training(corpus_id: str, job_id: str) -> None:
@@ -208,6 +243,12 @@ def _run_training(corpus_id: str, job_id: str) -> None:
                     # error) is logged and swallowed; onboarding still succeeds and docs stay "ready".
                     if config.DOC_DESCRIPTIONS_ENABLED:
                         _write_descriptions(db, corpus_id, [d["doc_id"] for d in docs])
+                    # QRC chunk descriptions (sidecar routing metadata), same best-effort contract:
+                    # one cart-resident generation per doc yields a short line per chunk, written to the
+                    # 'qrc_chunks.json' sidecar. Only runs when hybrid serving + the sidecar flag are on
+                    # (the vllm gate is already inside this branch). Never fails onboarding.
+                    if config.QRC_MODE == "hybrid" and config.QRC_CHUNK_DESC == "on":
+                        _write_chunk_descriptions(corpus_id, docs)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Training failed for corpus %s (job %s)", corpus_id, job_id)
             corpus.status = "failed"

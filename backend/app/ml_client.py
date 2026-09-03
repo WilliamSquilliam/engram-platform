@@ -99,14 +99,18 @@ def query(corpus_dir: str, question: str, k: int = 3) -> dict:
 
 
 def inference_query(doc_ids: list[str], question: str, max_tokens: int = 96,
-                    history: list[dict] | None = None) -> dict:
+                    history: list[dict] | None = None, context: str = "") -> dict:
     """Call the vLLM Inference Service (the resident-KV serving path): the control plane has already
     retrieved `doc_ids`; this service serves those carts and returns {answer, doc_ids}. Separate URL
-    from ML_SERVICE_URL because it's a distinct GPU process (vLLM env)."""
+    from ML_SERVICE_URL because it's a distinct GPU process (vLLM env).
+
+    `context` (QRC hybrid serving): the routed real-token chunks of docs 2..k, prefilled alongside the
+    top-1 resident cart. Empty string = legacy cart-only serve (the field defaults empty, so the vLLM
+    QueryReq's optional `context` sees no change on the off path)."""
     resp = httpx.post(
         f"{INFERENCE_SERVICE_URL}/query",
         json={"doc_ids": doc_ids, "question": question, "max_tokens": max_tokens,
-              "history": history or []},
+              "history": history or [], "context": context},
         timeout=300.0, headers=_ml_headers(),
     )
     resp.raise_for_status()

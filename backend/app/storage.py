@@ -73,6 +73,28 @@ class LocalStorage:
         docs = self.corpus_dir(corpus_id) / "docs"
         return sorted(p.relative_to(docs).as_posix() for p in docs.rglob("*") if p.is_file())
 
+    # --- QRC chunk-description sidecar (a per-corpus non-doc artifact) -------------------------------
+    # The onboard chunk-description pass writes {cart_id: [desc, ...]} here; retrieval reads it to fold
+    # chunk descriptions into routing. It lives in its OWN "chunks/" tree (parallel to docs/ and text/),
+    # so it is NEVER walked by list_doc_filenames — it must never be indexed/served as a document or
+    # perturb the corpus signature except through its dedicated hash (see read_chunk_sidecar_bytes).
+    _CHUNK_SIDECAR = "qrc_chunks.json"
+
+    def _chunk_sidecar_path(self, corpus_id: str) -> Path:
+        return self.corpus_dir(corpus_id) / "chunks" / self._CHUNK_SIDECAR
+
+    def save_chunk_sidecar(self, corpus_id: str, data: bytes) -> None:
+        """Persist the QRC chunk-description sidecar bytes (a JSON blob the onboard pass produced)."""
+        path = self._chunk_sidecar_path(corpus_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def read_chunk_sidecar_bytes(self, corpus_id: str) -> bytes:
+        """Raw sidecar bytes, or b"" when absent. Callers parse (JSON) or hash (corpus signature) it.
+        Returning bytes keeps the signature signal identical across the local and S3 backends."""
+        path = self._chunk_sidecar_path(corpus_id)
+        return path.read_bytes() if path.exists() else b""
+
     def delete_corpus(self, corpus_id: str) -> None:
         d = self.root / "corpora" / corpus_id
         if d.exists():
@@ -131,6 +153,29 @@ class S3Storage(LocalStorage):
             local.parent.mkdir(parents=True, exist_ok=True)
             local.write_bytes(obj["Body"].read())
         return super().read_text(corpus_id, filename)
+
+    def _chunk_sidecar_key(self, corpus_id: str) -> str:
+        # Sidecar object key, parallel to _key/_text_key but under chunks/ (mirrors _chunk_sidecar_path).
+        return f"corpora/{corpus_id}/chunks/{self._CHUNK_SIDECAR}"
+
+    def save_chunk_sidecar(self, corpus_id: str, data: bytes) -> None:
+        # Write the sidecar to the local mirror AND to S3 for durability, so a fresh control-plane
+        # (empty mirror) still reads it back in read_chunk_sidecar_bytes.
+        super().save_chunk_sidecar(corpus_id, data)
+        self._s3.put_object(Bucket=self.bucket, Key=self._chunk_sidecar_key(corpus_id), Body=data)
+
+    def read_chunk_sidecar_bytes(self, corpus_id: str) -> bytes:
+        # Prefer the local mirror (parity with read_text); on a miss pull from S3, caching to the mirror.
+        # A truly-absent sidecar (never onboarded with QRC on) yields b"" — routing then runs desc-less.
+        path = self._chunk_sidecar_path(corpus_id)
+        if not path.exists():
+            try:
+                obj = self._s3.get_object(Bucket=self.bucket, Key=self._chunk_sidecar_key(corpus_id))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(obj["Body"].read())
+            except self._s3.exceptions.NoSuchKey:
+                return b""
+        return super().read_chunk_sidecar_bytes(corpus_id)
 
     def list_doc_filenames(self, corpus_id: str) -> list[str]:
         # The local mirror is empty on a fresh worker (a separate task from the API

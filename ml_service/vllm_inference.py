@@ -599,20 +599,34 @@ def _cart_prefix_ids(store, doc_ids: list[str], vocab: int) -> tuple[list[int], 
     return prefix, total_p
 
 
+def _cart_user_turn(question: str, context: str) -> str:
+    """The user-turn text for a cart request. Empty context -> today's bare `question` (byte-for-byte
+    the resident-only serve path). Non-empty context -> the SAME 'Documents:\\n\\n{context}\\n\\n
+    Question:' framing serve_rag uses, so QRC-hybrid serving prefills docs 2..k's routed real-text
+    chunks as ordinary context on TOP of the top-1 doc's resident cart KV. The cart placeholder prefix
+    is prepended AFTER this by _compose_cart_prompt (it stays FIRST, positions 0..p-1 — the prefix-only
+    connector contract and original-position RoPE both require it), so the resident cart and the
+    routed context coexist in one request: cart = resident KV, context = extra real-token prefill."""
+    return f"Documents:\n\n{context}\n\nQuestion: {question}" if context else question
+
+
 def serve_query(doc_ids: list[str], question: str, max_tokens: int = 64,
-                history: list | None = None) -> dict:
+                history: list | None = None, context: str = "") -> dict:
     """Answer `question` from the resident KV of `doc_ids` (CAG carts) — the product serve path. The
     placeholder prefix is sum(cart.p) random tokens (KV overwritten by the connector) + the templated
     conversation; only the conversation is actually prefilled (the cart KV is resident), which is
     what prompt_tokens records. `history` = prior chat turns — they ride as small per-turn prefill
-    ON TOP of the resident corpus KV. Returns {answer, metrics} with MEASURED tokens + latency."""
+    ON TOP of the resident corpus KV. `context` (QRC hybrid) = additional real-token context — the
+    routed chunks of the non-top retrieved docs — folded into the user turn like serve_rag; it is
+    prefilled ON TOP of the resident cart KV, so prompt_tokens grows by exactly the context length
+    (correct and desired). Returns {answer, metrics} with MEASURED tokens + latency."""
     if not doc_ids:
         raise ValueError("doc_ids required")
     st = _get()
     tok, store = st["tok"], st["store"]
     vocab = getattr(tok, "vocab_size", None) or len(tok)
     prefix, total_p = _cart_prefix_ids(store, list(doc_ids), vocab)
-    prompt_ids, n_chat = _compose_cart_prompt(tok, prefix, question, history)
+    prompt_ids, n_chat = _compose_cart_prompt(tok, prefix, _cart_user_turn(question, context), history)
     ro, wall_ms = _generate(prompt_ids, list(doc_ids), max_tokens)
     ans = _strip_think(tok.decode(list(ro.outputs[0].token_ids), skip_special_tokens=True))
     return {"answer": ans, "metrics": _req_metrics(ro, wall_ms, n_chat, total_p)}
@@ -683,25 +697,30 @@ def _aget() -> dict:
 
 
 def _prompt_ids(tok, store, doc_ids: list[str], question: str,
-                history: list | None = None) -> tuple[list[int], int, int]:
-    """(prompt token ids, prefilled-conversation length, resident cart tokens) for a cart request."""
+                history: list | None = None, context: str = "") -> tuple[list[int], int, int]:
+    """(prompt token ids, prefilled-conversation length, resident cart tokens) for a cart request.
+    `context` (QRC hybrid) folds the routed real-text chunks of the non-top docs into the user turn
+    (serve_rag's 'Documents:' framing) while the cart placeholder prefix stays FIRST — resident cart
+    KV plus additional context prefill in one request. n_chat (== prompt_tokens) grows by the context
+    length, which is the desired 'real tokens prefilled this query' number."""
     if not doc_ids:
         raise ValueError("doc_ids required")
     prefix, total_p = _cart_prefix_ids(store, list(doc_ids),
                                        getattr(tok, "vocab_size", None) or len(tok))
-    prompt_ids, n_chat = _compose_cart_prompt(tok, prefix, question, history)
+    prompt_ids, n_chat = _compose_cart_prompt(tok, prefix, _cart_user_turn(question, context), history)
     return prompt_ids, n_chat, total_p
 
 
 async def serve_query_async(doc_ids: list[str], question: str, max_tokens: int = 64,
-                            history: list | None = None) -> dict:
+                            history: list | None = None, context: str = "") -> dict:
     """Concurrent-safe serve: explicit uuid request_id keys the registry, so vLLM can batch many
-    in-flight requests and each still routes to its own cart. No lock, no counter. Returns
-    {answer, metrics} with the same MEASURED shape as the sync path (wall-clock under concurrency
-    includes queueing — that's the honest number a fleet sees)."""
+    in-flight requests and each still routes to its own cart. No lock, no counter. `context` (QRC
+    hybrid) prefills the routed chunks of the non-top docs on TOP of the resident cart KV (see
+    _prompt_ids). Returns {answer, metrics} with the same MEASURED shape as the sync path (wall-clock
+    under concurrency includes queueing — that's the honest number a fleet sees)."""
     st = _aget()
     tok, reg, store = st["tok"], st["reg"], st["store"]
-    prompt, q_len, total_p = _prompt_ids(tok, store, doc_ids, question, history)
+    prompt, q_len, total_p = _prompt_ids(tok, store, doc_ids, question, history, context)
     rid = uuid.uuid4().hex
     reg.set(rid, list(doc_ids))
     final = None
@@ -1064,6 +1083,8 @@ if _HAS_FASTAPI:
         question: str
         max_tokens: int = 64
         history: list[dict] = []  # prior turns [{role, content}] — small prefill atop resident KV
+        context: str = ""         # QRC hybrid: routed real-text chunks of the non-top docs, prefilled
+                                  # atop the resident cart KV (empty -> today's resident-only path)
 
     class RagReq(BaseModel):
         context: str              # the retrieved documents RAG re-prefills (control plane assembled these)
@@ -1216,12 +1237,12 @@ if _HAS_FASTAPI:
         try:
             if SERVE_ASYNC:                       # batched concurrent serving (measured, incl. queueing)
                 result = await serve_query_async(req.doc_ids, req.question, req.max_tokens,
-                                                 req.history)
+                                                 req.history, req.context)
             else:                                 # proven one-at-a-time path (measured)
                 # serve_query blocks on the GPU for the whole generation; run it in
                 # the threadpool so the event loop (and /health) stays responsive.
                 result = await run_in_threadpool(
-                    serve_query, req.doc_ids, req.question, req.max_tokens, req.history)
+                    serve_query, req.doc_ids, req.question, req.max_tokens, req.history, req.context)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         except LookupError as e:
@@ -1316,10 +1337,11 @@ if _HAS_FASTAPI:
 
     @app.post("/query_stream")
     async def query_stream(req: QueryReq):
-        """Token-streaming cart serve (SSE). Requires the async engine (SERVE_ASYNC=1)."""
+        """Token-streaming cart serve (SSE). Requires the async engine (SERVE_ASYNC=1). `context`
+        (QRC hybrid) rides through as extra real-token prefill atop the resident cart KV."""
         st = _require_async()
         prompt, q_len, total_p = _prompt_ids(st["tok"], st["store"], req.doc_ids,
-                                             req.question, req.history)
+                                             req.question, req.history, req.context)
         return StreamingResponse(
             _stream_generate(prompt, list(req.doc_ids), req.max_tokens, q_len, total_p,
                              want_conf=True),   # cart side reports confidence for the adaptive router
