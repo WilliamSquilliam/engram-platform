@@ -308,6 +308,14 @@ resource "aws_instance" "gpu" {
 
   tags = { Name = "${var.name}-gpu" }
 
+  # Cap the create wait so a scarce-GPU AZ fails FAST (the provider retries
+  # InsufficientInstanceCapacity until this timeout — default 10m = ~25 slow retries).
+  # 4m is ample for a real launch (a granted instance reaches running in <90s) while
+  # letting a capacity hunt rotate AZs quickly instead of burning 10m per dead AZ.
+  timeouts {
+    create = "4m"
+  }
+
   lifecycle {
     # A new DLAMI release must NOT implicitly replace the box — its EBS holds the
     # downloaded model + HF cache. Bump var.gpu_ami_id deliberately to roll it.
