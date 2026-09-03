@@ -218,7 +218,8 @@ resource "aws_iam_instance_profile" "gpu" {
 # ---------------------------------------------------------------------------
 resource "aws_security_group" "gpu" {
   name        = "${var.name}-gpu"
-  description = "Engram GPU serving unit — internal-only :8001/:8002, SSM-managed"
+  # ASCII only: EC2 rejects non-ASCII GroupDescription (an em-dash here failed the first apply).
+  description = "Engram GPU serving unit - internal-only :8001/:8002, SSM-managed"
   vpc_id      = local.vpc_id
 
   egress {
