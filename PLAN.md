@@ -441,6 +441,17 @@ the Decisions log.
 
 (newest first)
 
+- **2026-09-03 — GATED engine config adopted on Command A+ (CUDA graphs + ngram speculation,
+  lossless): anchors remeasured AGAIN — 4.05× RAG at conc 128, 194ms TTFT at conc 8, 1.4s
+  single-stream answers (was 6.6s eager).** The 8B-era gated evidence transferred better than its
+  own 1.94×: at low concurrency the win is 3.6× (launch overhead + sequential decode dominate, and
+  grounded answers QUOTE their resident documents so ngram drafts verify at high rates), tapering
+  to 1.24× at saturation. Lossless gate passed: 4-arm accuracy identical before/after (qrc_res
+  13/15), zero errors across 1,472 sweep requests, span-loading clean under graph replay. Cost:
+  graph capture reserves ~3.7GB of KV pool (78,096 → 47,664 tokens), so ctx dropped 65536 → 45056
+  (max real k=3 request ~8k; a B200/bigger pool raises it back). Config mirrored into the
+  provision template SAME-DAY (the mirror-the-live-fix lesson, third occurrence avoided).
+  Estimator republished (landing 4f01f0f).
 - **2026-09-03 — RESIDENT QRC validated + OFFICIAL anchors remeasured; multi-cart serving retired
   from the estimator.** Wheel 0.7.0 span-addressable loading (explicit-segment registry, per-span
   RoPE rebase incl. negative deltas, loud geometric validation) served the official 4-arm k=3 run:

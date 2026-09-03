@@ -37,7 +37,10 @@ VLLM_TP="${VLLM_TP:-1}"                    # 1 for a single B200; set 2 for the 
 # remapping would invalidate connector KV views). 64k covers real product prompts (top-k
 # carts + question + history is ~<32k); 131k returns with the B200 (more VRAM) or the
 # chunked per-layer cart decode (wheel backlog) that shrinks the transient ~64x.
-CONTEXT_TOKENS="${CONTEXT_TOKENS:-65536}"
+# 45056, not 65536: the gated config's graph capture reserves KV-pool memory and the
+# pool must still fit one max-length request (65536 needed 4.0GiB, 2.92GiB remained).
+# Max real k=3 request is ~8k tokens, so 45k is still ample headroom.
+CONTEXT_TOKENS="${CONTEXT_TOKENS:-45056}"
 FS_NAME="${FS_NAME:-engram-fs}"
 HOST_SERVE="${HOST_SERVE:-gpu.engramdynamics.org}"
 HOST_ONBOARD="${HOST_ONBOARD:-gpu-onboard.engramdynamics.org}"
@@ -113,6 +116,15 @@ VLLM_MAX_MODEL_LEN=$CONTEXT_TOKENS
 # the connector degraded requests to blank KV (found live on the 2x H100 bench run).
 VLLM_GPU_MEM_UTIL=0.85
 VLLM_TORCH_DTYPE=auto
+# --- GATED engine config (adopted 2026-09-03, lossless gate passed: accuracy identical
+# 13/15 before/after; anchors remeasured — 3.6x qps at conc 1 tapering to 1.24x at 128).
+# CUDA graphs (eager off) + ngram speculative decoding: grounded answers QUOTE their
+# resident documents, so ngram drafts verify at high rates (greedy = byte-identical
+# output). NOTE: graph capture reserves pool memory — at ctx 65536 the pool no longer
+# fit one max-length request, hence the CONTEXT_TOKENS=45056 default above; a bigger
+# pool (B200 / higher util) can raise it back.
+VLLM_ENFORCE_EAGER=0
+SERVE_SPEC=ngram
 # --- ML-plane shared-token auth (enforced on every route except /health) ---
 ML_AUTH_TOKEN=$ML_AUTH_TOKEN
 # --- onboard THROUGH the engine: the engine is the only stack that can run this model class; the
