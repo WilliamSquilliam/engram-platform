@@ -275,8 +275,13 @@ export const api = {
   // --- External-source connectors (Google Drive / SharePoint) -----------------------------------
   // Start the OAuth handshake for a provider. Returns the provider consent URL the browser then
   // full-page-redirects to; the provider redirects back to the setup page with ?connected=/?connector_error=.
+  // credentials:"include" is LOAD-BEARING: the response sets the API-domain session cookie holding
+  // Authlib's CSRF state, and this is a cross-origin call (app.-> api. subdomain), where fetch's
+  // default "same-origin" silently DROPS Set-Cookie — the callback then has no state, every token
+  // exchange fails, and the user lands on an error page after consenting (found live 2026-09-03).
   connectorAuthorize: (provider: ConnectorProvider, corpusId: string) =>
-    req<{ url: string }>(`/connectors/${provider}/authorize?corpus_id=${encodeURIComponent(corpusId)}`),
+    req<{ url: string }>(`/connectors/${provider}/authorize?corpus_id=${encodeURIComponent(corpusId)}`,
+      { credentials: "include" }),
   // This workspace's live connections (one per linked account). Used to skip OAuth when a connection
   // for the clicked provider already exists, and to find the newest one after the OAuth return.
   connectorConnections: () => req<ConnectorConnection[]>("/connectors/connections"),

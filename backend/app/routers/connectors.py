@@ -117,8 +117,15 @@ def _recover_state(request: Request, spec: dict) -> tuple[str | None, str | None
     return framed.get("corpus_id"), framed.get("user_id")
 
 
-def _fail_redirect(provider: str) -> RedirectResponse:
-    return RedirectResponse(f"{config.FRONTEND_URL}/document-base?connector_error={provider}")
+def _fail_redirect(provider: str, corpus_id: str | None = None) -> RedirectResponse:
+    """Send the browser back to a page that EXISTS with the error flagged. When the signed state
+    survived we return to the corpus's setup page (where the user clicked Connect); without it the
+    only per-corpus route is unknown, so fall back to /document-base/new. The old target
+    (/document-base with no id) was a 404 — the user saw a dead page instead of an error
+    (found live, 2026-09-03: the cross-origin cookie bug below presented as a bare 404)."""
+    base = (f"{config.FRONTEND_URL}/document-base/{corpus_id}/setup" if corpus_id
+            else f"{config.FRONTEND_URL}/document-base/new")
+    return RedirectResponse(f"{base}?connector_error={provider}")
 
 
 @router.get("/{provider}/callback")
@@ -137,16 +144,21 @@ async def callback(provider: str, request: Request, db: Session = Depends(get_db
 
     try:
         token = await client.authorize_access_token(request)  # validates state, exchanges the code
-    except Exception:  # noqa: BLE001 — any OAuth failure -> back to the setup page with an error flag
-        logger.warning("connector callback token exchange failed for %s", provider)
-        return _fail_redirect(provider)
+    except Exception as exc:  # noqa: BLE001 — any OAuth failure -> back to the setup page with an error flag
+        # Name the exception CLASS: a MismatchingStateError means the session cookie never made it
+        # back (the cross-origin XHR credentials bug class), while an OAuthError names the provider's
+        # actual complaint (invalid_grant, redirect_uri_mismatch, ...). The bare one-line warning
+        # cost a blind bisection when this fired live.
+        logger.warning("connector callback token exchange failed for %s: %s: %s",
+                       provider, type(exc).__name__, str(exc)[:200])
+        return _fail_redirect(provider, corpus_id)
 
     refresh_token = token.get("refresh_token")
     access_token = token.get("access_token")
     if not refresh_token or not access_token or not corpus_id or not user_id:
         # No refresh token = we can't import later (Google without prompt=consent, or a missing scope).
         logger.warning("connector callback for %s missing refresh token / state", provider)
-        return _fail_redirect(provider)
+        return _fail_redirect(provider, corpus_id)
 
     # Resolve the user (the callback has no Authorization header — identity comes from the signed state).
     user = db.get(User, user_id)
