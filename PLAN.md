@@ -441,6 +441,20 @@ the Decisions log.
 
 (newest first)
 
+- **2026-09-03 — Compression EXONERATED for the k=3 accuracy gap (codec A/B on the box):
+  lossless carts fail composed exactly like 3-bit carts ⇒ composition interference confirmed,
+  QRC stays the designed fix.** Method (`bench/codec_ab.sh`, transient systemd unit on the GPU
+  box): force-rebuilt the same 13 bench carts at cc_safe (4-bit) and bf16 (lossless), same 15
+  questions / retriever / engine as the baseline; restored default cc_aggr carts + clean env
+  after. Results (cart substring-ok): cc_aggr 15/15 k=1, 8–9/15 k=3; cc_safe 15/15 k=1, 6/15
+  k=3; **bf16 15/15 k=1, 8/15 k=3** — zero compression noise, same composed failure. Failure
+  modes at bf16 k=3: the model slips into question-narration ("The user is asking…") and burns
+  the 128-token budget deliberating across the 3 resident docs, plus one genuine cross-doc
+  confabulation (same question that confabulated under cc_aggr). One "failure" is a judge
+  artifact (case-sensitive substring: answered "railway", expected "Railway") — the strict
+  count slightly understates every arm (RAG control wobbled 12–14/15 across runs the same way).
+  Side-find: bf16 onboards at 1.17 s/doc vs 2.38–2.49 with the codec — encode is ~half the
+  onboarding wall clock. Raw artifacts: `bench/results/accuracy_k{1,3}_{cc_safe,bf16}.json`.
 - **2026-09-02/03 — Head-to-head benchmark run on the production stack (Command A+, 2×H100,
   production hybrid retriever in the loop for BOTH arms) — the concurrency advantage HOLDS, and
   the run flushed out four product-critical bugs before any customer saw them.** Method: 13 QASPER
