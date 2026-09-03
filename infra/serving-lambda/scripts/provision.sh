@@ -165,6 +165,12 @@ tar -C "$REPO_ROOT" --exclude='__pycache__' --exclude='*.pyc' -cf - ml_service \
   | tar -C "$STAGE" -xf -
 cp "$LIB_DIR/bootstrap-lambda.sh" "$STAGE/bootstrap-lambda.sh"
 chmod +x "$STAGE/bootstrap-lambda.sh"
+# The dependency lockfile (pip freeze from a proven-green box) rides along as a pip
+# CONSTRAINTS file: bootstrap keeps its install lines but every transitive version is
+# pinned, so a fresh region's resolve can't drift (2026-09-03: an unpinned resolve on
+# an older image produced a stack that couldn't run — flashinfer/torch/driver matrix).
+cp "$LIB_DIR/../requirements.lock" "$STAGE/requirements.lock" 2>/dev/null \
+  || log "WARN: no requirements.lock beside scripts/ — bootstrap will resolve unpinned"
 
 cat > "$STAGE/self-provision.sh" <<'SELFPROV'
 #!/usr/bin/env bash

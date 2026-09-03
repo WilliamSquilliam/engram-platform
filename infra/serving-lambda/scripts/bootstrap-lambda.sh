@@ -105,21 +105,64 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Base packages + Python venv. Lambda Stack already has the driver/CUDA; we
-# only need the venv toolchain, rsync (weight seeding), and Caddy's prereqs.
+# 2. Environment PREFLIGHT + base packages + Python venv.
+#
+# DO NOT ASSUME the image is modern (2026-09-03 env-drift incident, us-south-2):
+# Lambda's per-region images differ WILDLY — that region shipped Ubuntu 22.04
+# (python3.10) with an r570 driver (CUDA 12.8), while the previous region's image
+# was newer on both. The freshly-resolved stack (torch 2.13 = cu130-only builds,
+# flashinfer 0.6.16 = py3.12+ syntax at import) cannot run on the old image, and
+# the failures masquerade as fork/spawn multiprocessing crashes long before the
+# honest "driver too old" surfaces. Preflight both axes; fix python ourselves
+# (apt, no reboot) and upgrade the driver (needs a reboot -> fail LOUD with the
+# exact remediation, don't half-bootstrap).
 # ---------------------------------------------------------------------------
 log "installing base packages (python venv, rsync, caddy prereqs)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y -qq || true
 apt-get install -y -qq python3-venv python3-pip rsync curl debian-keyring debian-archive-keyring apt-transport-https >/dev/null 2>&1 || true
 
+# --- driver preflight: torch 2.13+ wheels are cu130-only; CUDA 13 needs r580+.
+DRIVER_MAJOR="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 || echo 0)"
+if [ "${DRIVER_MAJOR:-0}" -lt 580 ]; then
+  log "driver r${DRIVER_MAJOR} < r580 (CUDA 13) — installing nvidia-driver-580-server"
+  apt-get install -y -qq nvidia-driver-580-server >/dev/null
+  log "FATAL: driver upgraded but a REBOOT is required before CUDA 13 works."
+  log "Run:  sudo reboot   — then re-run provision.sh (idempotent)."
+  exit 42
+fi
+
+# --- python preflight: flashinfer >=0.6.16 (vllm 0.28's pin) needs python >= 3.12
+# at IMPORT time (array.array[int] annotation). Install 3.12 and build the venv on it.
+PYBIN="python3"
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'; then
+  log "system python3 < 3.12 — installing python3.12 for the venv"
+  apt-get install -y -qq python3.12 python3.12-venv python3.12-dev >/dev/null
+  PYBIN="python3.12"
+fi
+
 if [ ! -d "$VENV" ]; then
-  log "creating venv $VENV"
-  python3 -m venv "$VENV"
+  log "creating venv $VENV (interpreter: $PYBIN)"
+  "$PYBIN" -m venv "$VENV"
+elif ! "$VENV/bin/python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'; then
+  log "existing venv is on python < 3.12 — rebuilding it on $PYBIN"
+  rm -rf "$VENV"
+  "$PYBIN" -m venv "$VENV"
 fi
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 pip install -U pip wheel >/dev/null
+
+# Constraints lockfile (pip freeze from a proven-green box, bundled by provision.sh):
+# every install below carries -c so transitive versions can't drift with the PyPI
+# tide. Delete/regenerate requirements.lock deliberately to move the stack.
+CONSTRAINTS=""
+if [ -f "$BUNDLE_DIR/requirements.lock" ]; then
+  CONSTRAINTS="-c $BUNDLE_DIR/requirements.lock"
+  log "using dependency constraints from requirements.lock"
+else
+  log "WARN: no requirements.lock in bundle — resolving unpinned (env-drift risk)"
+fi
 
 # INSTALL ORDER MATTERS: wheel + app requirements FIRST, vllm LAST. vllm pins its
 # exact torch (and matching torchvision/pydantic floors); anything installed after
@@ -134,13 +177,15 @@ log "installing the engram-cartridge wheel with [s3,build] extras"
 # --no-deps keeps the forced reinstall from churning the resolved env; the extras' deps
 # are installed by the requirements step + vllm below.
 pip install --force-reinstall --no-deps "engram-cartridge @ file://$WHEEL"
-pip install "engram-cartridge[s3,build] @ file://$WHEEL" >/dev/null 2>&1 || true  # extras deps only
+# shellcheck disable=SC2086  ($CONSTRAINTS is deliberately word-split: "-c <file>" or empty)
+pip install $CONSTRAINTS "engram-cartridge[s3,build] @ file://$WHEEL" >/dev/null 2>&1 || true  # extras deps only
 
 log "installing ml_service requirements (minus engram-cartridge — the wheel supplies it)"
 REQ="$APP_DIR/ml_service/requirements.txt"
 FILTERED="$(mktemp)"
 grep -v -iE '^\s*engram-cartridge' "$REQ" > "$FILTERED" || true
-pip install -r "$FILTERED"
+# shellcheck disable=SC2086
+pip install $CONSTRAINTS -r "$FILTERED"
 rm -f "$FILTERED"
 
 # --- vLLM LAST (see order note above). Blackwell (B200, SM100) needs recent CUDA
@@ -149,7 +194,13 @@ rm -f "$FILTERED"
 # Stack's driver; if a fresh Blackwell build regresses, pin a known-good version.
 # -U so an already-satisfied vllm still gets its dep pins re-enforced on re-runs.
 log "installing latest vllm (>=0.26, LAST so its torch/pydantic pins win)"
-pip install -U "vllm>=0.26"
+# shellcheck disable=SC2086
+pip install $CONSTRAINTS -U "vllm>=0.26"
+
+# The services run as ubuntu but this bootstrap runs as root — without the chown the
+# first import dies on PermissionError (cartridges/config.py mkdirs a data/ dir inside
+# site-packages; hit live 2026-09-03 when a manual venv rebuild skipped this step).
+chown -R ubuntu:ubuntu "$VENV"
 
 # Fail loud on the box (not at first query) if the stack doesn't import. Must hit
 # the LAZY import paths the services actually hit: plain `import vllm` passed while
