@@ -137,6 +137,10 @@ CARTRIDGE_REGISTRY_DIR=/home/ubuntu/engram/registry
 HF_HUB_DISABLE_PROGRESS_BARS=1
 # The connector crosses the vLLM EngineCore subprocess boundary (cart KV serialization).
 VLLM_ALLOW_INSECURE_SERIALIZATION=1
+# RoPE pairing convention of the served model for the multi-cart rebase: Cohere family
+# (Command A/A+) is INTERLEAVED; Llama/Qwen are half-split (the default). A wrong value
+# corrupts 2nd+ cart keys instead of shifting them.
+CARTRIDGE_ROPE_CONVENTION=interleaved
 PYTHONUNBUFFERED=1
 # --- box-side inputs bootstrap-lambda.sh reads (not app config) ---
 LAMBDA_FS_NAME=$FS_NAME
