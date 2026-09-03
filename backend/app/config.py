@@ -55,18 +55,18 @@ INFERENCE_MAX_TOKENS = int(os.environ.get("INFERENCE_MAX_TOKENS", "256"))
 # confidence drops below ADAPTIVE_THETA, escalate to the RAG backup (full retrieved context on
 # the same engine) and flag it in the UI. "" / unset disables escalation (pure single-cart CAG).
 ADAPTIVE_THETA = os.environ.get("ADAPTIVE_THETA", "")
-# --- QRC hybrid serving (k=3 accuracy fix) ----------------------------------------------------
-# Composing k>1 solo-encoded carts interferes REGARDLESS of compression (PLAN decisions 2026-09-03),
-# so hybrid mode keeps the TOP-1 retrieved doc as the resident cart and routes the OTHER docs' answer-
-# bearing chunks in as small real-token context (see app/chunking.py — the shared core, byte-identical
-# to what the bench measures).
-#   QRC_MODE=hybrid (default) -> top-1 cart + query-routed chunks of docs 2..k as real-token context;
-#   QRC_MODE=resident         -> top-1 full cart + docs 2..k loaded as KV SPANS (their routed chunks'
-#                                token ranges) instead of re-prefilled text — the same evidence served
-#                                as resident KV, no per-query chunk prefill. Stays behind hybrid until
-#                                validated on the box; flip per-env once the span-load path is proven.
-#   QRC_MODE=off              -> legacy multi-cart serve (every retrieved doc_id handed over, no context).
-QRC_MODE = os.environ.get("QRC_MODE", "hybrid").lower()
+# --- QRC serving (k>1 accuracy fix; PLAN decisions 2026-09-03) --------------------------------
+# Composing k>1 solo-encoded carts interferes REGARDLESS of compression, so k>1 serving keeps the
+# TOP-1 doc as the resident cart and routes the other docs' answer-bearing chunks (app/chunking.py,
+# byte-identical core to what the bench measures).
+#   QRC_MODE=resident (DEFAULT — promoted with the founder 2026-09-03 after the official run:
+#                      accuracy 13/15 == hybrid == RAG, zero span-load errors, and the sweep anchors
+#                      were measured in this mode: 3.53 qps @conc128, 2.2x the retired multi-cart)
+#                      -> top-1 full cart + docs 2..k loaded as KV SPANS (wheel >= 0.7.0 required).
+#   QRC_MODE=hybrid   -> same evidence but docs 2..k's chunks re-prefilled as text context (no wheel
+#                        0.7.0 dependency — the fallback if a serving box runs an older wheel).
+#   QRC_MODE=off      -> legacy multi-cart serve (every retrieved doc_id handed over, no context).
+QRC_MODE = os.environ.get("QRC_MODE", "resident").lower()
 # Chunk-description sidecar generation at onboard (one cart-resident generation per doc yields a short
 # line per chunk, folded into the chunk's INDEX text as routing metadata — never served). Only runs on
 # the vllm backend when QRC_MODE=hybrid (see routers/jobs.py). DEFAULT OFF (decided with the founder,
@@ -87,13 +87,13 @@ QRC_BUDGET_TOKENS = int(os.environ.get("QRC_BUDGET_TOKENS", str(_chunking.CHUNK_
 # hybrid runs lexical-only when the dense stage is off, which reproduces bm25-only behavior). "pgvector"
 # stays a documented seam. All swap behind retrieval.retrieve() — the rest of the app only sees retrieve().
 RETRIEVAL_BACKEND = os.environ.get("RETRIEVAL_BACKEND", "hybrid").lower()
-# --- Dynamic top-k: keep a variable number of retrieved docs by relative fused-score, not a fixed k.
-# RETRIEVAL_DYNAMIC_K=on -> after RRF fusion, keep doc i (beyond the top-1) only while its fused score
-# is >= RETRIEVAL_DYNK_RATIO * the top doc's fused score, capped at the requested k and always keeping
-# >= 1 (the top doc). "off" (DEFAULT) is today's behavior exactly (a flat top-k). The ratio trades
-# recall for precision: a lower ratio admits more docs, a higher ratio keeps only close-scoring ones.
-RETRIEVAL_DYNAMIC_K = os.environ.get("RETRIEVAL_DYNAMIC_K", "off").lower()
-RETRIEVAL_DYNK_RATIO = float(os.environ.get("RETRIEVAL_DYNK_RATIO", "0.6"))
+# --- Dynamic top-k: keep a variable number of retrieved docs by RELEVANCE ratio (dense cosine when
+# available, else raw bm25 — never the rank-derived RRF scores), fused order preserved, capped at the
+# requested k, always keeping >= 1. "on" (DEFAULT — promoted with the founder 2026-09-03: ratio 0.85
+# measured 14/15 at mean k 2.4 on the official suite; cutting weak runner-ups never hurt and is
+# strictly cheaper). "off" = flat top-k. Lower ratio admits more docs; higher keeps only close ones.
+RETRIEVAL_DYNAMIC_K = os.environ.get("RETRIEVAL_DYNAMIC_K", "on").lower()
+RETRIEVAL_DYNK_RATIO = float(os.environ.get("RETRIEVAL_DYNK_RATIO", "0.85"))
 # Dense stage of the hybrid retriever: "on" (default) builds the fastembed embedder lazily; "off"
 # runs hybrid lexical-only (bm25s), skipping any model download. Tests set "off" so they never fetch
 # a model. Hybrid ALSO degrades to lexical-only automatically if fastembed import/model-load fails.
