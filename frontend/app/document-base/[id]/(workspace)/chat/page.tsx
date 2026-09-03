@@ -77,11 +77,16 @@ export default function ChatPage() {
       let convoId = opts.convoId ?? activeId;
       if (!convoId) convoId = startNew();
 
-      // History sent to the backend = prior turns (role/content only), oldest first.
+      // History sent to the backend = prior turns (role/content only), oldest first, capped to
+      // the LAST 20 messages (ChatReq.history max_length=20 — sending the full transcript 422'd
+      // every conversation at its 11th question; the model keeps the docs resident regardless,
+      // so dropping the oldest turns costs only distant chat context). Long individual messages
+      // are truncated to the schema's 4k-char cap the same way.
       const prior = opts.priorMessages ?? active?.messages ?? [];
       const history = prior
         .filter((m) => !m.error && m.content)
-        .map((m) => ({ role: m.role, content: m.content }));
+        .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }))
+        .slice(-20);
       const pinnedDocs = active?.pinnedDocs;
 
       // Append the user turn + an empty streaming assistant turn.
