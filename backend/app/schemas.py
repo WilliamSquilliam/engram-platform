@@ -397,6 +397,10 @@ class ChatReq(BaseModel):
     # identical evidence. Client-supplied, so they are validated against the corpus
     # (retrieval.context_for) — never interpreted as paths.
     doc_ids: list[str] | None = Field(default=None, max_length=20)
+    # Optional per-request answer budget — the industry-standard shape: the client asks,
+    # the server CLAMPS to the INFERENCE_MAX_TOKENS ceiling (never raises past it), and
+    # the model still stops at EOS well before the cap on short answers. None = ceiling.
+    max_tokens: int | None = Field(default=None, ge=1, le=4096)
 
 
 class ScaleRunSaveReq(BaseModel):

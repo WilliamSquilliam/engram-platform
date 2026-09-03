@@ -69,7 +69,10 @@ def _answer(corpus: Corpus, req: ChatReq, db: Session) -> ChatResp:
         # QRC hybrid split: serve the top-1 cart + routed chunks of docs 2..k as `context` (hybrid), or
         # the full doc_ids list with no context (off). used_docs/sources still report ALL doc_ids below.
         serve_ids, context = _hybrid_split(corpus.id, req.question, doc_ids)
-        result = ml_client.inference_query(serve_ids, req.question, config.INFERENCE_MAX_TOKENS,
+        # Per-request answer budget, CLAMPED to the server ceiling (a client can ask for less,
+        # never more — the ceiling is the GPU-time guardrail, EOS is the normal stop).
+        max_tokens = min(req.max_tokens or config.INFERENCE_MAX_TOKENS, config.INFERENCE_MAX_TOKENS)
+        result = ml_client.inference_query(serve_ids, req.question, max_tokens,
                                            history=[m.model_dump() for m in req.history],
                                            context=context)
         # tier="cartridge": the non-stream serve path always answers cart-alone (adaptive escalation
@@ -172,8 +175,12 @@ def chat_stream(
     _theta = config.ADAPTIVE_THETA
     theta = float(_theta) if _theta not in (None, "") else None
     url = f"{config.INFERENCE_SERVICE_URL}/query_stream"
+    # Per-request answer budget, CLAMPED to the server ceiling (same contract as /chat); the
+    # RAG-backup escalation below reuses the payload's budget so the shown answer never gets a
+    # different one.
+    max_tokens = min(req.max_tokens or config.INFERENCE_MAX_TOKENS, config.INFERENCE_MAX_TOKENS)
     payload = {"doc_ids": serve_ids, "question": req.question,
-               "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history, "context": context}
+               "max_tokens": max_tokens, "history": history, "context": context}
 
     async def gen():
         # head carries used_docs so the UI can PIN them on follow-up turns (skip re-retrieval) and
@@ -211,7 +218,7 @@ def chat_stream(
                 bhold = {"m": None}
                 for frame in _forward(f"{config.INFERENCE_SERVICE_URL}/rag_query_stream",
                                       {"context": context, "question": req.question,
-                                       "max_tokens": config.INFERENCE_MAX_TOKENS, "history": history},
+                                       "max_tokens": max_tokens, "history": history},
                                       bhold):
                     if await request.is_disconnected():
                         return

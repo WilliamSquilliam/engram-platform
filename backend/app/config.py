@@ -45,7 +45,12 @@ INFERENCE_SERVICE_URL = os.environ.get("INFERENCE_SERVICE_URL", "http://localhos
 # same-VPC trust boundary, not per-caller identity.
 ML_AUTH_TOKEN = os.environ.get("ML_AUTH_TOKEN", "")
 INFERENCE_TOPK = int(os.environ.get("INFERENCE_TOPK", "3"))
-INFERENCE_MAX_TOKENS = int(os.environ.get("INFERENCE_MAX_TOKENS", "96"))
+# Server-side answer-length CEILING (a guardrail, not the expected stopping mechanism — the model
+# stops at EOS well before it on short answers). 96 -> 256 (2026-09-03, with the founder): 96 was
+# benchmark-sized and truncated real answers mid-deliberation; the QRC 256-token diagnostic measured
+# k=3 accuracy 13/15 -> 14/15 from this alone. Clients may request LESS per call (ChatReq.max_tokens,
+# clamped here); worst case ~10s decode/request on the current box, bounded GPU time per query.
+INFERENCE_MAX_TOKENS = int(os.environ.get("INFERENCE_MAX_TOKENS", "256"))
 # Adaptive router: on the vLLM cart side, if the cart-alone answer's mean-token-logprob
 # confidence drops below ADAPTIVE_THETA, escalate to the RAG backup (full retrieved context on
 # the same engine) and flag it in the UI. "" / unset disables escalation (pure single-cart CAG).
