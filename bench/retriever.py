@@ -56,16 +56,44 @@ DENSE_MODEL = "BAAI/bge-small-en-v1.5"
 _WORD = re.compile(r"[A-Za-z0-9]+")
 
 
-def rrf_fuse(ranked_lists: list[list[str]], k: int, rrf_k: int = RRF_K) -> list[str]:
-    """Reciprocal Rank Fusion over several ranked doc_id lists -> fused top-k. Each list contributes
-    1/(rrf_k + rank) (rank 0-based); ties break on doc_id ascending (deterministic). Verbatim
-    parity with retrieval.py.rrf_fuse."""
+def rrf_fuse_scored(ranked_lists: list[list[str]], rrf_k: int = RRF_K) -> list[tuple[str, float]]:
+    """The scored fusion under RRF: [(doc_id, fused_score), ...] descending by score (doc_id ascending
+    tie-break). Single source of the fused scores — rrf_fuse slices its ids, dynamic_k reads its scores.
+    Parity with retrieval.py.rrf_fuse_scored."""
     scores: dict[str, float] = {}
     for ranked in ranked_lists:
         for rank, doc_id in enumerate(ranked):
             scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank)
-    fused = sorted(scores, key=lambda d: (-scores[d], d))
-    return fused[:k]
+    return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def rrf_fuse(ranked_lists: list[list[str]], k: int, rrf_k: int = RRF_K) -> list[str]:
+    """Reciprocal Rank Fusion over several ranked doc_id lists -> fused top-k. Each list contributes
+    1/(rrf_k + rank) (rank 0-based); ties break on doc_id ascending (deterministic). Verbatim
+    parity with retrieval.py.rrf_fuse."""
+    return [d for d, _ in rrf_fuse_scored(ranked_lists, rrf_k)][:k]
+
+
+def dynamic_k_cut(ordered_ids: list[str], relevance: dict[str, float], k: int,
+                  ratio: float) -> list[str]:
+    """Dynamic top-k: fused ORDER, but each runner-up admitted only if its RELEVANCE (dense cosine
+    when available, else raw bm25 — NEVER the rank-derived RRF score, whose neighbor gaps are ~2%
+    and unthresholdable) is >= ratio * the top doc's. Runner-ups tested independently (relevance is
+    not monotone in fused order), capped at k, always >= 1; non-positive top relevance -> flat
+    top-k (nothing to threshold on). Parity with retrieval.py.dynamic_k (named _cut here to avoid
+    colliding with HybridRetriever.dynamic_k)."""
+    if not ordered_ids:
+        return []
+    top_rel = relevance.get(ordered_ids[0], 0.0)
+    if top_rel <= 0.0:
+        return ordered_ids[:k]
+    kept = [ordered_ids[0]]
+    for doc_id in ordered_ids[1:]:
+        if len(kept) >= k:
+            break
+        if relevance.get(doc_id, 0.0) >= ratio * top_rel:
+            kept.append(doc_id)
+    return kept
 
 
 def lexical_ranking(query: str, doc_ids: list[str], texts: list[str]) -> list[str]:
@@ -178,15 +206,21 @@ class HybridRetriever:
         # only: descs are fixed per process run (the sidecar is loaded once at phase start).
         self._chunk_vecs: dict[str, object] = {}
 
-    def _lexical(self, question: str) -> list[str]:
+    def _lexical(self, question: str) -> tuple[list[str], dict[str, float]]:
+        """(full bm25 ranking, raw scores by doc_id) — the scores are dynamic-k's fallback
+        relevance signal (docs bm25 dropped score 0.0). Mirrors retrieval._lexical_rank_cached."""
         import bm25s
         q = bm25s.tokenize(question, stopwords="en", show_progress=False)
-        idx, _ = self._bm25.retrieve(q, k=len(self.doc_ids), show_progress=False)
+        idx, scores = self._bm25.retrieve(q, k=len(self.doc_ids), show_progress=False)
         ranked = [self.doc_ids[i] for i in idx[0]]
+        by_id = {self.doc_ids[i]: float(s) for i, s in zip(idx[0], scores[0])}
         seen = set(ranked)
-        return ranked + sorted(d for d in self.doc_ids if d not in seen)
+        return ranked + sorted(d for d in self.doc_ids if d not in seen), by_id
 
-    def _dense(self, question: str) -> list[str] | None:
+    def _dense(self, question: str) -> tuple[list[str], dict[str, float]] | None:
+        """(dense ranking, cosine by doc_id) or None — the cosines are dynamic-k's PRIMARY
+        relevance signal (RRF fused scores are rank-derived and can't be ratio-thresholded).
+        Mirrors retrieval._dense_rank_cached."""
         if self._doc_vecs is None:
             return None
         embedder = _dense_embedder(self.cache_dir)
@@ -198,19 +232,36 @@ class HybridRetriever:
             q /= (np.linalg.norm(q) + 1e-12)
             sims = self._doc_vecs @ q
             order = sorted(range(len(self.doc_ids)), key=lambda i: (-float(sims[i]), self.doc_ids[i]))
-            return [self.doc_ids[i] for i in order]
+            return ([self.doc_ids[i] for i in order],
+                    {self.doc_ids[i]: float(sims[i]) for i in range(len(self.doc_ids))})
         except Exception as exc:  # noqa: BLE001 — degrade to lexical-only this query, as prod does
             logger.warning("dense ranking failed this query, using lexical-only: %s", exc)
             return None
 
+    def _scored(self, question: str) -> tuple[list[tuple[str, float]], dict[str, float]]:
+        """(scored fused ranking, RELEVANCE by doc_id) for `question` — one fusion shared by
+        retrieve() (top-k slice over the order) and dynamic_k() (relative cut over the relevance).
+        Relevance = dense cosine when the dense stage ran, else raw bm25 (see retrieval.dynamic_k
+        for why RRF's own rank-derived scores must never be the cut signal)."""
+        if not self.doc_ids:
+            return [], {}
+        lexical, bm25_scores = self._lexical(question)
+        dense = self._dense(question) if self.dense else None
+        ranked_lists = [lexical] if dense is None else [lexical, dense[0]]
+        relevance = dense[1] if dense is not None else bm25_scores
+        return rrf_fuse_scored(ranked_lists), relevance
+
     def retrieve(self, question: str, k: int) -> list[str]:
         """Top-k doc_ids for `question` (fused bm25s + dense via RRF), against the prebuilt index."""
-        if not self.doc_ids:
-            return []
-        lexical = self._lexical(question)
-        dense = self._dense(question) if self.dense else None
-        ranked_lists = [lexical] if dense is None else [lexical, dense]
-        return rrf_fuse(ranked_lists, k)
+        scored, _ = self._scored(question)
+        return [d for d, _ in scored][:k]
+
+    def dynamic_k(self, question: str, k_max: int, ratio: float) -> list[str]:
+        """The dynamically-cut doc_ids for `question`: fused ORDER, but each runner-up admitted only
+        if its relevance (dense cosine, else bm25) >= ratio * the top doc's, capped at k_max, always
+        >= 1. Mirrors retrieval.dynamic_k over _hybrid_rank."""
+        scored, relevance = self._scored(question)
+        return dynamic_k_cut([d for d, _ in scored], relevance, k_max, ratio)
 
     def retrieve_context(self, question: str, k: int) -> tuple[list[str], str]:
         """(top-k doc_ids, their concatenated text) — the cart arm gets the ids, the RAG arm gets
@@ -218,22 +269,18 @@ class HybridRetriever:
         ids = self.retrieve(question, k)
         return ids, "\n\n".join(self._by_id.get(d, "") for d in ids)
 
-    def route_chunks_context(self, question: str, doc_ids: list[str], budget_tokens: int | None = None,
-                             descs_by_doc: dict[str, list[str]] | None = None) -> str:
-        """QRC hybrid: the routed real-text context for the NON-top retrieved docs (`doc_ids` are
-        docs 2..k — the top doc is served as the resident cart, not routed here). For each doc, its
-        own corpus text plus the optional chunk descriptions (descs_by_doc[doc_id], parallel to
-        chunking.chunk_spans) go through the SHARED core's query-routed chunk selection under a token
-        budget, and the selected chunks are composed into one context string exactly as the control
-        plane composes it. Reuses THIS retriever's fastembed instance (the same embedder the doc
-        stage built) so no second model is loaded and the chunk-dense ranking matches prod; when the
-        dense stage is off/unavailable the routing degrades to bm25s-only, same as retrieval. Empty
-        doc_ids (e.g. topk=1) -> '' (the qrc arm then degenerates to the pure cart arm)."""
+    def _route(self, question: str, doc_ids: list[str], budget_tokens: int | None,
+               descs_by_doc: dict[str, list[str]] | None) -> list[dict]:
+        """The shared query-routed chunk selection for the NON-top docs — the [{doc_id, text,
+        chunk_indices}] list chunking.route_chunks returns. route_chunks_context composes its text;
+        route_chunk_spans maps its chunk_indices back to char spans. For each doc, its own corpus text
+        plus optional chunk descriptions (descs_by_doc[doc_id], parallel to chunking.chunk_spans) go
+        through the shared core under a token budget. Reuses THIS retriever's fastembed instance (the
+        same embedder the doc stage built) so no second model loads and the chunk-dense ranking matches
+        prod; dense off/unavailable degrades to bm25s-only. Empty doc_ids -> []."""
         if not doc_ids:
-            return ""
+            return []
         descs_by_doc = descs_by_doc or {}
-        # The SAME embedder instance the doc retriever already holds (module singleton), or None when
-        # dense is off/unavailable — never construct a second embedder for the chunk stage.
         embedder = _dense_embedder(self.cache_dir) if self.dense else None
         docs = []
         for d in doc_ids:
@@ -254,5 +301,28 @@ class HybridRetriever:
             qv = chunking.embed_normalized(embedder, [question])
             q_vec = qv[0] if qv is not None else None
         kw = {} if budget_tokens is None else {"budget_tokens": budget_tokens}
-        routed = chunking.route_chunks(question, docs, embedder=embedder, q_vec=q_vec, **kw)
-        return chunking.compose_context(routed)
+        return chunking.route_chunks(question, docs, embedder=embedder, q_vec=q_vec, **kw)
+
+    def route_chunks_context(self, question: str, doc_ids: list[str], budget_tokens: int | None = None,
+                             descs_by_doc: dict[str, list[str]] | None = None) -> str:
+        """QRC hybrid: the routed real-text context for the NON-top retrieved docs (`doc_ids` are
+        docs 2..k — the top doc is served as the resident cart, not routed here). The selected chunks
+        are composed into one context string exactly as the control plane composes it. Empty doc_ids
+        (e.g. topk=1) -> '' (the qrc arm then degenerates to the pure cart arm)."""
+        return chunking.compose_context(self._route(question, doc_ids, budget_tokens, descs_by_doc))
+
+    def route_chunk_spans(self, question: str, doc_ids: list[str], budget_tokens: int | None = None,
+                          descs_by_doc: dict[str, list[str]] | None = None) -> dict[str, list[list[int]]]:
+        """QRC RESIDENT: the CHAR spans of the SAME chunks route_chunks_context would compose, per
+        routed doc — so the qrc_res arm can hand the engine loadable spans instead of text. Identical
+        selection to route_chunks_context (shared _route), then map each selected chunk ordinal back to
+        its char span via chunking.chunk_spans(text). Mirrors retrieval.route_chunk_spans. Empty
+        doc_ids -> {} (topk=1: nothing to span-load)."""
+        routed = self._route(question, doc_ids, budget_tokens, descs_by_doc)
+        out: dict[str, list[list[int]]] = {}
+        for r in routed:
+            spans = chunking.chunk_spans(self._by_id.get(r["doc_id"], ""))
+            picked = [i for i in r["chunk_indices"] if 0 <= i < len(spans)]
+            if picked:
+                out[r["doc_id"]] = [[spans[i][0], spans[i][1]] for i in picked]
+        return out

@@ -441,6 +441,40 @@ the Decisions log.
 
 (newest first)
 
+- **2026-09-03 — RESIDENT-QRC serve mode + dynamic top-k BUILT (behind flags, pending box validation).**
+  Two additions on top of the QRC hybrid path, both OFF by default so nothing changes until proven:
+  **(1) RESIDENT-QRC (`QRC_MODE=resident`)** — instead of re-prefilling docs 2..k's routed chunks as
+  TEXT `context` every query (hybrid), load those chunks' KV as SPANS: the top-1 doc loads its full
+  cart, each other doc loads only the token ranges its routed CHAR spans map to. The engine
+  (`ml_service/vllm_inference.py`) re-tokenizes each spanned doc EXACTLY as onboarding did
+  (`add_special_tokens=False`, truncated to `CAG_MAX_DOC_TOK`, `return_offsets_mapping=True`, LRU-cached
+  per (cart_id, text-hash)) and maps each char span to a token range that fully covers the chars
+  (`_spans_to_token_ranges`, a pure/tested fn). All loaded segments pack into ONE contiguous prefix
+  (the connector contract is prefix-only), so NO text may sit between them — source attribution moved
+  into the computed question turn (`_resident_user_turn`: "Above: the primary document, then excerpts
+  from: <title B>; and <title C>." + the direct-answer instruction, titles control-plane-supplied). The
+  engine's registry entry is the new DICT-mode list `{cart_id, src_start, src_len, dest}` (dest = the
+  segment's cumulative offset in the packed prefix) — the wheel side (separate repo) consumes it.
+  `QueryReq` gained `doc_spans` (per cart_id, CHAR spans into the doc's text), `doc_texts` (the served
+  text so the engine can re-tokenize — it never reads storage), `doc_titles` (attribution). Guards 400:
+  a span map for an id not in doc_ids, span-loading the top-1 doc, or a spanned doc with no text; an id
+  whose spans all resolve empty is dropped from BOTH the prefix and the attribution (never a zero-token
+  segment). Backend: `retrieval.route_chunk_spans` returns the SAME chunks `route_chunks_context`
+  composes but as char spans (via `chunking.chunk_spans` indices), reusing the `chunk_vecs` cache;
+  `served_texts_for`/`doc_titles_for` supply the engine's text+titles from the same cached index the
+  spans index into. `total_p` still counts loaded KV as resident; computed = template + question only.
+  **(2) Dynamic top-k (`RETRIEVAL_DYNAMIC_K=on`, `RETRIEVAL_DYNK_RATIO=0.6`)** — after RRF fusion keep
+  doc i (beyond the top) only while its fused score >= ratio*top, capped at k, always >= 1. Scores are
+  exposed cleanly via `rrf_fuse_scored` (the single fusion source; `rrf_fuse` slices its ids,
+  `dynamic_k` reads its scores — no re-fusion). Bench: new `qrc_res` arm (all doc_ids + spans, no
+  context) and `qrc_dyn` arm (doc set from `dynamic_k`, records per-question k, reports mean k);
+  `phase_accuracy` now runs cart/qrc/qrc_res/rag_churn by default (qrc_dyn opt-in). Tests: engine
+  char->token mapping over a fake tokenizer, `route_chunk_spans` selection parity + char-range validity
+  + unknown-id KeyError, dynamic-k boundary/cap/>=1 math + retrieve() wiring, chat resident split
+  payload shape (mocked ml_client). Full backend suite 297 passed / 4 skipped; bench selftest 0
+  failures (extended to assert qrc_res spans exactly the non-top docs with no context, and qrc_dyn
+  records k) — all GPU-free/network-free. `hybrid` stays the default serve mode until the resident
+  span-load path is validated on the box.
 - **2026-09-03 — QRC hybrid serving BUILT + VALIDATED: k=3 accuracy 8-9→13/15 at 128 gen tokens
   (14/15 at 256), onboarding cost unchanged, routing adds ~56ms/query.** Design: top-1 retrieved
   doc serves as the resident cart (proven 15/15 solo); docs 2..k contribute query-routed chunks

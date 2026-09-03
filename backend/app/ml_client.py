@@ -99,18 +99,34 @@ def query(corpus_dir: str, question: str, k: int = 3) -> dict:
 
 
 def inference_query(doc_ids: list[str], question: str, max_tokens: int = 96,
-                    history: list[dict] | None = None, context: str = "") -> dict:
+                    history: list[dict] | None = None, context: str = "",
+                    doc_spans: dict[str, list[list[int]]] | None = None,
+                    doc_texts: dict[str, str] | None = None,
+                    doc_titles: dict[str, str] | None = None) -> dict:
     """Call the vLLM Inference Service (the resident-KV serving path): the control plane has already
     retrieved `doc_ids`; this service serves those carts and returns {answer, doc_ids}. Separate URL
     from ML_SERVICE_URL because it's a distinct GPU process (vLLM env).
 
     `context` (QRC hybrid serving): the routed real-token chunks of docs 2..k, prefilled alongside the
     top-1 resident cart. Empty string = legacy cart-only serve (the field defaults empty, so the vLLM
-    QueryReq's optional `context` sees no change on the off path)."""
+    QueryReq's optional `context` sees no change on the off path).
+
+    `doc_spans`/`doc_texts`/`doc_titles` (QRC RESIDENT serving): instead of text `context`, load docs
+    2..k as KV SPANS — doc_spans maps a spanned cart_id to CHAR spans into its text, doc_texts supplies
+    that text so the engine can re-tokenize, doc_titles supplies the attribution titles. All None off
+    the resident path — the JSON keys are only included when set, so the QueryReq's optional fields see
+    no change (and no null spray) on the hybrid/off path."""
+    body = {"doc_ids": doc_ids, "question": question, "max_tokens": max_tokens,
+            "history": history or [], "context": context}
+    if doc_spans is not None:
+        body["doc_spans"] = doc_spans
+    if doc_texts is not None:
+        body["doc_texts"] = doc_texts
+    if doc_titles is not None:
+        body["doc_titles"] = doc_titles
     resp = httpx.post(
         f"{INFERENCE_SERVICE_URL}/query",
-        json={"doc_ids": doc_ids, "question": question, "max_tokens": max_tokens,
-              "history": history or [], "context": context},
+        json=body,
         timeout=300.0, headers=_ml_headers(),
     )
     resp.raise_for_status()

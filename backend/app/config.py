@@ -60,7 +60,11 @@ ADAPTIVE_THETA = os.environ.get("ADAPTIVE_THETA", "")
 # so hybrid mode keeps the TOP-1 retrieved doc as the resident cart and routes the OTHER docs' answer-
 # bearing chunks in as small real-token context (see app/chunking.py — the shared core, byte-identical
 # to what the bench measures).
-#   QRC_MODE=hybrid (default) -> top-1 cart + query-routed chunks of docs 2..k;
+#   QRC_MODE=hybrid (default) -> top-1 cart + query-routed chunks of docs 2..k as real-token context;
+#   QRC_MODE=resident         -> top-1 full cart + docs 2..k loaded as KV SPANS (their routed chunks'
+#                                token ranges) instead of re-prefilled text — the same evidence served
+#                                as resident KV, no per-query chunk prefill. Stays behind hybrid until
+#                                validated on the box; flip per-env once the span-load path is proven.
 #   QRC_MODE=off              -> legacy multi-cart serve (every retrieved doc_id handed over, no context).
 QRC_MODE = os.environ.get("QRC_MODE", "hybrid").lower()
 # Chunk-description sidecar generation at onboard (one cart-resident generation per doc yields a short
@@ -83,6 +87,13 @@ QRC_BUDGET_TOKENS = int(os.environ.get("QRC_BUDGET_TOKENS", str(_chunking.CHUNK_
 # hybrid runs lexical-only when the dense stage is off, which reproduces bm25-only behavior). "pgvector"
 # stays a documented seam. All swap behind retrieval.retrieve() — the rest of the app only sees retrieve().
 RETRIEVAL_BACKEND = os.environ.get("RETRIEVAL_BACKEND", "hybrid").lower()
+# --- Dynamic top-k: keep a variable number of retrieved docs by relative fused-score, not a fixed k.
+# RETRIEVAL_DYNAMIC_K=on -> after RRF fusion, keep doc i (beyond the top-1) only while its fused score
+# is >= RETRIEVAL_DYNK_RATIO * the top doc's fused score, capped at the requested k and always keeping
+# >= 1 (the top doc). "off" (DEFAULT) is today's behavior exactly (a flat top-k). The ratio trades
+# recall for precision: a lower ratio admits more docs, a higher ratio keeps only close-scoring ones.
+RETRIEVAL_DYNAMIC_K = os.environ.get("RETRIEVAL_DYNAMIC_K", "off").lower()
+RETRIEVAL_DYNK_RATIO = float(os.environ.get("RETRIEVAL_DYNK_RATIO", "0.6"))
 # Dense stage of the hybrid retriever: "on" (default) builds the fastembed embedder lazily; "off"
 # runs hybrid lexical-only (bm25s), skipping any model download. Tests set "off" so they never fetch
 # a model. Hybrid ALSO degrades to lexical-only automatically if fastembed import/model-load fails.

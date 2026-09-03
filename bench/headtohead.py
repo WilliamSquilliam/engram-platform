@@ -109,6 +109,7 @@ DEFAULT_ARMS = ["cart", "rag_churn", "rag_hot"]
 ANCHOR_RAG_ARM = "rag_churn"
 DEFAULT_GEN_TOKENS = 128
 DEFAULT_TOPK = 3
+DEFAULT_DYNK_RATIO = 0.6   # qrc_dyn: keep docs whose fused score >= ratio * top (parity with config)
 DEFAULT_ZIPF_S = 1.1
 # rag at conc 128 can take MINUTES (the 30B anchor showed 68s e2e; command-a-plus is bigger) —
 # a generous per-request timeout so a slow churned prefill is counted, not aborted.
@@ -124,7 +125,9 @@ SETTLE_S = 1.0
 
 # Per-arm seed offsets so each (arm, conc) cell samples a reproducible-but-distinct question
 # stream (bench_fleet._ARM_SEED).
-_ARM_SEED = {"cart": 1, "rag_churn": 2, "rag_hot": 3, "qrc": 4}
+_ARM_SEED = {"cart": 1, "rag_churn": 2, "rag_hot": 3, "qrc": 4, "qrc_res": 5, "qrc_dyn": 6}
+# Arms whose routing folds the chunk-description sidecar (all the QRC family: text-context + resident).
+_QRC_ARMS = frozenset({"qrc", "qrc_res", "qrc_dyn"})
 
 
 # ------------------------------------------------------------------ stats (bench_fleet parity)
@@ -254,24 +257,55 @@ class ServeClient:
 
 
 # ------------------------------------------------------------------ one request (arm-specific)
+def _titles_for(retriever, doc_ids: list[str]) -> dict:
+    """{doc_id: title} for the resident arms' attribution — title = the doc's first non-empty line,
+    capped at 120 chars (mirrors retrieval.doc_titles_for). The bench retriever holds the corpus text
+    by id, so the control-plane-supplied titles are derived the same way the product derives them."""
+    out = {}
+    for d in doc_ids:
+        text = retriever._by_id.get(d, "")  # bench retriever's id->text map (parity with idx.texts)
+        out[d] = next((ln.strip() for ln in text.splitlines() if ln.strip()), d)[:120]
+    return out
+
+
 async def one_request(client: ServeClient, retriever, arm: str, q: dict, gen_tokens: int,
-                      topk: int, descs_by_doc: dict | None = None) -> dict:
+                      topk: int, descs_by_doc: dict | None = None,
+                      dynk_ratio: float = DEFAULT_DYNK_RATIO) -> dict:
     """One measured request for `arm`. Retrieval is TIMED and counted INSIDE the request e2e (the
     honest end-to-end a user sees: retrieve then generate) AND reported separately as retrieval_ms.
-    cart -> /query_stream with the retrieved doc_ids; qrc -> /query_stream with the TOP doc as the
-    resident cart plus docs[1:]' query-routed real-text chunks as `context` (the hybrid serve path);
-    rag_churn/rag_hot -> /rag_query_stream with the retrieved docs' text as context (churn arm
-    prefixes a per-request nonce so the prefix cache can never hit). `descs_by_doc` (qrc only) is the
-    onboarding chunk-description sidecar {doc_id: [desc,...]}, folded into chunk INDEX text to sharpen
-    routing (None -> route on chunk text alone). Returns a per-request record with
-    ttft/e2e/retrieval_ms/text/expect/error."""
+      cart      -> /query_stream with the retrieved doc_ids (resident-KV, no context).
+      qrc       -> /query_stream with the TOP doc as the resident cart + docs[1:]' query-routed
+                   real-text CHUNKS as `context` (the hybrid serve path).
+      qrc_res   -> /query_stream with ALL doc_ids (top full-cart + docs[1:] loaded as KV SPANS via
+                   doc_spans/doc_texts/doc_titles), NO context field (the resident serve path).
+      qrc_dyn   -> like qrc_res but the doc set comes from dynamic_k(ratio) instead of a flat topk;
+                   the per-question k lands in the record ('k') so the cell can report mean k.
+      rag_churn/rag_hot -> /rag_query_stream with the retrieved docs' text as context (churn arm
+                   prefixes a per-request nonce so the prefix cache can never hit).
+    `descs_by_doc` (qrc/qrc_res/qrc_dyn) is the onboarding chunk-description sidecar {doc_id:[desc,...]},
+    folded into chunk INDEX text to sharpen routing (None -> route on chunk text alone). Returns a
+    per-request record with ttft/e2e/retrieval_ms/text/expect/error (+ 'k' for qrc_dyn)."""
     t_retr = time.perf_counter()
-    doc_ids, context = retriever.retrieve_context(q["q"], topk)
+    picked_k = topk
+    if arm == "qrc_dyn":
+        # Dynamic doc set: keep docs while their fused score stays within ratio of the top. Then pull
+        # the served text by id (retrieve_context re-fuses; dynamic_k reads the same fused scores).
+        doc_ids = retriever.dynamic_k(q["q"], topk, dynk_ratio)
+        picked_k = len(doc_ids)
+        context = ""
+    else:
+        doc_ids, context = retriever.retrieve_context(q["q"], topk)
+    doc_spans = None
     if arm == "qrc":
         # The TOP doc serves as the resident cart; the rest route their answer-bearing chunks in as
         # real-token context. At topk=1 doc_ids[1:] is empty -> context '' -> the qrc arm degenerates
         # to the pure cart arm (identical request), which is the intended edge behavior.
         context = retriever.route_chunks_context(q["q"], doc_ids[1:], descs_by_doc=descs_by_doc)
+    elif arm in ("qrc_res", "qrc_dyn"):
+        # RESIDENT: docs 2..k load as KV SPANS, not text. Route their spans, hand the engine the spanned
+        # docs' text (to re-tokenize) + titles (attribution). NO context field. At <=1 doc, doc_spans is
+        # {} and this degenerates to a pure top-1 cart serve.
+        doc_spans = retriever.route_chunk_spans(q["q"], doc_ids[1:], descs_by_doc=descs_by_doc)
     retrieval_ms = (time.perf_counter() - t_retr) * 1000
     if arm == "cart":
         res = await client.stream("/query_stream", {
@@ -280,6 +314,12 @@ async def one_request(client: ServeClient, retriever, arm: str, q: dict, gen_tok
         res = await client.stream("/query_stream", {
             "doc_ids": [doc_ids[0]], "context": context, "question": q["q"],
             "max_tokens": gen_tokens})
+    elif arm in ("qrc_res", "qrc_dyn"):
+        kept = [d for d in doc_ids[1:] if d in doc_spans]
+        res = await client.stream("/query_stream", {
+            "doc_ids": doc_ids, "question": q["q"], "max_tokens": gen_tokens,
+            "doc_spans": doc_spans, "doc_texts": {d: retriever._by_id.get(d, "") for d in kept},
+            "doc_titles": _titles_for(retriever, kept)})
     else:
         if arm == "rag_churn":
             # NO per-request cache-salt field exists on RagReq (checked), so force honest churn
@@ -293,19 +333,21 @@ async def one_request(client: ServeClient, retriever, arm: str, q: dict, gen_tok
     ttft_ms = (res["ttft_ms"] + retrieval_ms) if res["ttft_ms"] is not None else None
     return {"arm": arm, "ttft_ms": ttft_ms, "e2e_ms": e2e_ms, "retrieval_ms": retrieval_ms,
             "text": res["text"], "expect": q.get("expect_substring", ""),
-            "doc_ids": doc_ids, "error": res["error"]}
+            "doc_ids": doc_ids, "k": picked_k, "error": res["error"]}
 
 
 # ------------------------------------------------------------------ one cell (closed loop)
 async def run_cell(client: ServeClient, retriever, arm: str, conc: int, questions: list[dict],
                    gen_tokens: int, topk: int, zipf_s: float, seed: int,
-                   reqs_override: int | None = None, descs_by_doc: dict | None = None) -> dict:
+                   reqs_override: int | None = None, descs_by_doc: dict | None = None,
+                   dynk_ratio: float = DEFAULT_DYNK_RATIO) -> dict:
     """One (arm, conc) measurement cell: closed loop at exactly `conc` in-flight, reqs=max(32,3*conc),
     a discarded warmup of min(conc,8), Zipf(s) question sampling seeded per cell. Emits the per-cell
     row (qps from wall over completed reqs, ttft/e2e p50 + p95, retrieval_ms p50, errors, and the
     4-request fact spot-check). Verbatim port of bench_fleet._run_cell adapted to the HTTP arms.
     reqs_override is ONLY for --selftest (a tiny cell); production always uses max(32,3*conc).
-    descs_by_doc (qrc arm only) is the chunk-description sidecar passed into routing."""
+    descs_by_doc (qrc/qrc_res/qrc_dyn) is the chunk-description sidecar passed into routing; dynk_ratio
+    is the qrc_dyn dynamic-k cutoff. The row carries mean_k for qrc_dyn (the mean docs kept per query)."""
     reqs = reqs_override if reqs_override is not None else max(32, 3 * conc)
     rng = random.Random(seed)
     sem = asyncio.Semaphore(conc)
@@ -314,7 +356,8 @@ async def run_cell(client: ServeClient, retriever, arm: str, conc: int, question
     async def worker(measured: bool) -> None:
         async with sem:
             q = questions[zipf_pick(rng, len(questions), zipf_s)]
-            r = await one_request(client, retriever, arm, q, gen_tokens, topk, descs_by_doc)
+            r = await one_request(client, retriever, arm, q, gen_tokens, topk, descs_by_doc,
+                                  dynk_ratio=dynk_ratio)
             if measured:
                 results.append(r)
 
@@ -342,6 +385,9 @@ async def run_cell(client: ServeClient, retriever, arm: str, conc: int, question
         "spot_check": f"{spot_pass}/{len(spot)}",
         "error_samples": [r["error"] for r in errors[:3]],
     }
+    if arm == "qrc_dyn" and ok:
+        # Mean docs kept per query under dynamic-k — the headline this arm exists to measure.
+        row["mean_k"] = round(sum(r["k"] for r in ok) / len(ok), 2)
     print(f"[bench:cell] {json.dumps({k: row[k] for k in row if k != 'error_samples'})}",
           flush=True)
     if errors:
@@ -472,9 +518,9 @@ async def phase_sweep(args, stop: asyncio.Event) -> None:
     questions = load_questions(BENCH_DIR / "questions.json")
     retriever = build_retriever(doc_ids, texts, dense=not args.no_dense, cache_dir=args.cache_dir)
     client = ServeClient(args.serve_url, args.onboard_url, args.req_timeout)
-    # The qrc arm folds the chunk-description sidecar into routing when it exists (built by the
-    # chunkdesc phase); absent, it routes on chunk text alone.
-    descs_by_doc = load_chunk_descs() if "qrc" in args.arms else None
+    # The QRC-family arms fold the chunk-description sidecar into routing when it exists (built by the
+    # chunkdesc phase); absent, they route on chunk text alone.
+    descs_by_doc = load_chunk_descs() if _QRC_ARMS & set(args.arms) else None
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RESULTS_DIR / "sweep.json"
     cells: list[dict] = []
@@ -488,7 +534,8 @@ async def phase_sweep(args, stop: asyncio.Event) -> None:
                 cells.append(await run_cell(
                     client, retriever, arm, conc, questions, args.gen_tokens, args.topk,
                     args.zipf_s, seed=conc * 1000 + _ARM_SEED.get(arm, 9),
-                    descs_by_doc=descs_by_doc if arm == "qrc" else None))
+                    descs_by_doc=descs_by_doc if arm in _QRC_ARMS else None,
+                    dynk_ratio=args.dynk_ratio))
                 # Persist after EVERY cell (partial-safe), then settle + drain before the next.
                 _write_sweep(out_path, cells, args, partial=True)
                 await asyncio.sleep(SETTLE_S)
@@ -515,45 +562,57 @@ def _write_sweep(path: Path, cells: list[dict], args, partial: bool) -> None:
     }, indent=2), encoding="utf-8")
 
 
+# The accuracy phase's default arm set: cart, qrc (hybrid text), qrc_res (resident spans), rag_churn.
+# qrc_dyn is opt-in (it changes the doc SET per query, a separate question from serve-mode accuracy) —
+# included only when the operator names it in --arms.
+_ACCURACY_DEFAULT_ARMS = ["cart", "qrc", "qrc_res", "rag_churn"]
+
+
 async def phase_accuracy(args) -> None:
-    """Every question once per arm at conc=1 — cart, qrc, rag_churn — full answers preserved for the
-    operator's manual judgment. The qrc arm folds the chunk-description sidecar (qrc_chunks.json)
-    into routing when present, else routes on chunk text alone. Dumps accuracy.json:
-      [{doc_id, q, expect_substring, cart_answer/cart_ok, qrc_answer/qrc_ok, rag_answer/rag_ok, ...}]."""
+    """Every question once per arm at conc=1 — full answers preserved for the operator's manual
+    judgment. Arms: cart, qrc, qrc_res, rag_churn by default (topk from --topk, default 3); qrc_dyn is
+    added only when --arms names it. The QRC-family arms fold the chunk-description sidecar
+    (qrc_chunks.json) into routing when present, else route on chunk text alone. Dumps accuracy.json:
+    one row per question with <arm>_answer / <arm>_ok / <arm>_error per arm (+ <arm>_k for qrc_dyn)."""
+    arms = list(args.arms) if any(a in ("qrc_dyn",) for a in args.arms) else _ACCURACY_DEFAULT_ARMS
+    # Keep the default set unless the operator explicitly opted qrc_dyn in; then run exactly --arms so
+    # the run is what was asked for (still records k for qrc_dyn).
+    if "qrc_dyn" in args.arms and args.arms == DEFAULT_ARMS:
+        arms = _ACCURACY_DEFAULT_ARMS + ["qrc_dyn"]
     doc_ids, texts = load_corpus(BENCH_DIR / "corpus.jsonl")
     questions = load_questions(BENCH_DIR / "questions.json")
     retriever = build_retriever(doc_ids, texts, dense=not args.no_dense, cache_dir=args.cache_dir)
     client = ServeClient(args.serve_url, args.onboard_url, args.req_timeout)
-    descs_by_doc = load_chunk_descs()  # None -> qrc routes on chunk text alone
+    descs_by_doc = load_chunk_descs()  # None -> QRC arms route on chunk text alone
     rows: list[dict] = []
     try:
         for q in questions:
-            cart = await one_request(client, retriever, "cart", q, args.gen_tokens, args.topk)
-            qrc = await one_request(client, retriever, "qrc", q, args.gen_tokens, args.topk,
-                                    descs_by_doc)
-            rag = await one_request(client, retriever, "rag_churn", q, args.gen_tokens, args.topk)
             exp = q.get("expect_substring", "")
-            rows.append({
-                "doc_id": q.get("doc_id"), "q": q["q"], "expect_substring": exp,
-                "cart_answer": cart["text"], "qrc_answer": qrc["text"], "rag_answer": rag["text"],
-                "cart_ok": bool(exp) and exp in cart["text"],
-                "qrc_ok": bool(exp) and exp in qrc["text"],
-                "rag_ok": bool(exp) and exp in rag["text"],
-                "cart_error": cart["error"], "qrc_error": qrc["error"], "rag_error": rag["error"],
-            })
-            print(f"[bench:accuracy] {q.get('doc_id')}: cart_ok={rows[-1]['cart_ok']} "
-                  f"qrc_ok={rows[-1]['qrc_ok']} rag_ok={rows[-1]['rag_ok']}", flush=True)
+            row = {"doc_id": q.get("doc_id"), "q": q["q"], "expect_substring": exp}
+            for arm in arms:
+                descs = descs_by_doc if arm in _QRC_ARMS else None
+                res = await one_request(client, retriever, arm, q, args.gen_tokens, args.topk,
+                                        descs, dynk_ratio=args.dynk_ratio)
+                row[f"{arm}_answer"] = res["text"]
+                row[f"{arm}_ok"] = bool(exp) and exp in res["text"]
+                row[f"{arm}_error"] = res["error"]
+                if arm == "qrc_dyn":
+                    row["qrc_dyn_k"] = res["k"]   # per-question docs kept under dynamic-k
+            rows.append(row)
+            print("[bench:accuracy] " + q.get("doc_id", "?") + ": "
+                  + " ".join(f"{a}_ok={row[f'{a}_ok']}" for a in arms), flush=True)
     finally:
         await client.aclose()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     (RESULTS_DIR / "accuracy.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False),
                                                encoding="utf-8")
-    cart_ok = sum(1 for r in rows if r["cart_ok"])
-    qrc_ok = sum(1 for r in rows if r["qrc_ok"])
-    rag_ok = sum(1 for r in rows if r["rag_ok"])
-    print(f"[bench:accuracy] DONE {len(rows)} questions: cart {cart_ok}/{len(rows)} substring-ok, "
-          f"qrc {qrc_ok}/{len(rows)} substring-ok, rag {rag_ok}/{len(rows)} substring-ok "
-          f"(full answers in results/accuracy.json for manual judgment)", flush=True)
+    summary = ", ".join(f"{a} {sum(1 for r in rows if r[f'{a}_ok'])}/{len(rows)} substring-ok"
+                        for a in arms)
+    done = f"[bench:accuracy] DONE {len(rows)} questions: {summary}"
+    if "qrc_dyn" in arms and rows:
+        mean_k = round(sum(r["qrc_dyn_k"] for r in rows) / len(rows), 2)
+        done += f"; qrc_dyn mean k={mean_k}"
+    print(done + " (full answers in results/accuracy.json for manual judgment)", flush=True)
 
 
 # ------------------------------------------------------------------ argparse / main
@@ -578,9 +637,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--conc-list", type=_parse_conc, default=DEFAULT_CONC,
                     help="comma-separated concurrency tiers (default 1,8,32,64,128)")
     ap.add_argument("--arms", type=lambda s: [x for x in s.split(",") if x], default=DEFAULT_ARMS,
-                    help="comma-separated arms (default cart,rag_churn,rag_hot)")
+                    help="comma-separated arms (default cart,rag_churn,rag_hot; also qrc, qrc_res, "
+                         "qrc_dyn)")
     ap.add_argument("--gen-tokens", type=int, default=DEFAULT_GEN_TOKENS)
     ap.add_argument("--topk", type=int, default=DEFAULT_TOPK)
+    ap.add_argument("--dynk-ratio", type=float, default=DEFAULT_DYNK_RATIO,
+                    help="qrc_dyn dynamic-k cutoff: keep docs with fused score >= ratio * top (0.6)")
     ap.add_argument("--seed", type=int, default=0, help="base seed offset added to every cell seed")
     ap.add_argument("--zipf-s", type=float, default=DEFAULT_ZIPF_S)
     ap.add_argument("--onboard-batch", type=int, default=4, help="docs per /onboard_cag call")

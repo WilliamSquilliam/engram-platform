@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import hmac
 import inspect
 import os
@@ -444,7 +445,12 @@ def _sampling(cart_ids, **kw):
     vLLM 0.26 rewrites request ids before the scheduler (caller_rid -> 'rid-xxxxxxxx'),
     so registry-by-rid alone goes silently cartless there (v026qual run 6); the request-
     embedded channel survives any rid rewrite. Registry writes stay alongside for stacks
-    whose SamplingParams lacks extra_args (and as the ops/invalidation surface)."""
+    whose SamplingParams lacks extra_args (and as the ops/invalidation surface).
+
+    `cart_ids` is EITHER the legacy list[str] of cart ids (full-cart loads) OR the RESIDENT-QRC
+    dict-mode list [{cart_id, src_start, src_len, dest}] of span segments — the same two shapes the
+    registry accepts. Legacy ids are stringified (unchanged); dict entries pass through verbatim so
+    the connector reads the explicit source ranges + destination offsets."""
     from vllm import SamplingParams  # local, like every vLLM import here (module loads GPU-free)
     global _SP_HAS_EXTRA_ARGS
     if _SP_HAS_EXTRA_ARGS is None:
@@ -454,7 +460,8 @@ def _sampling(cart_ids, **kw):
         except TypeError:
             _SP_HAS_EXTRA_ARGS = False
     if cart_ids and _SP_HAS_EXTRA_ARGS:
-        kw["extra_args"] = {"cartridge_cart_ids": [str(c) for c in cart_ids]}
+        embedded = cart_ids if isinstance(cart_ids[0], dict) else [str(c) for c in cart_ids]
+        kw["extra_args"] = {"cartridge_cart_ids": embedded}
     return SamplingParams(temperature=0.0, **kw)
 
 
@@ -599,6 +606,161 @@ def _cart_prefix_ids(store, doc_ids: list[str], vocab: int) -> tuple[list[int], 
     return prefix, total_p
 
 
+# ---- RESIDENT-QRC span loading ---------------------------------------------------------
+# Resident-QRC serves docs 2..k as LOADED KV SPANS (excerpts of their carts) instead of
+# re-prefilling their chunk text: the top-1 doc loads its whole cart, each other doc loads
+# only the token ranges its routed CHAR spans map to. The engine re-tokenizes the spanned
+# doc's text EXACTLY as onboarding did (add_special_tokens=False, truncated to CAG_MAX_DOC_TOK)
+# to get an offset mapping, then converts each [char_start,char_end) span to a token range that
+# fully covers those chars. The connector loads the packed prefix and every loaded segment's
+# KV lands at its `dest` offset; the char->token math here is what keeps a segment's KV aligned
+# with the tokens it was built from (a wrong range would scatter a doc's KV onto the wrong slots).
+
+
+def _spans_to_token_ranges(offsets: list[tuple[int, int]], char_spans: list[list[int]],
+                           n_tokens: int) -> list[tuple[int, int]]:
+    """Map CHAR spans [start,end) to TOKEN ranges [tok_start,tok_end) over an offset mapping.
+
+    `offsets` is the tokenizer's return_offsets_mapping output for the (truncated) doc text:
+    offsets[i] = (char_start, char_end) of token i. For each char span we take EVERY token whose
+    char range OVERLAPS the span (so the range FULLY covers the requested chars — a token straddling
+    the boundary is included, never dropped), clip to [0, n_tokens), and drop spans that resolve
+    empty (a span entirely past the truncation point, or a zero-width span between tokens). Ranges
+    are returned in ascending source order; a doc with NO surviving range yields [] (the caller then
+    drops that doc from BOTH the prefix and the attribution list — never serve a zero-token segment).
+
+    Pure over its inputs (offsets + spans) so it is unit-testable with a fake tokenizer's offsets —
+    no tokenizer, no model, no GPU needed."""
+    ranges: list[tuple[int, int]] = []
+    for span in char_spans:
+        c0, c1 = int(span[0]), int(span[1])
+        if c1 <= c0:
+            continue  # empty/degenerate char span
+        tok_start = None
+        tok_end = 0
+        for i, (o0, o1) in enumerate(offsets):
+            if i >= n_tokens:
+                break
+            if o1 <= o0:
+                continue  # special/empty-offset token (shouldn't appear with add_special_tokens=False)
+            # Overlap test: token [o0,o1) intersects char span [c0,c1).
+            if o0 < c1 and o1 > c0:
+                if tok_start is None:
+                    tok_start = i
+                tok_end = i + 1
+        if tok_start is not None and tok_end > tok_start:
+            ranges.append((tok_start, tok_end))
+    return ranges
+
+
+# LRU over (cart_id, text-hash) -> the tokenizer offset mapping for that doc's truncated text, so a
+# repeat query on the same spanned doc never re-tokenizes. Keyed by a content hash so a re-onboarded
+# doc with changed text gets a fresh mapping. A tiny hand-rolled cache (functools.lru_cache can't key
+# on the unhashable tokenizer, and the value is a list); bounded, FIFO-evicted.
+_offset_cache: dict[tuple[str, str], tuple[list[tuple[int, int]], int]] = {}
+_offset_cache_lock = threading.Lock()
+_OFFSET_CACHE_MAX = 256
+
+
+def _offset_mapping(tok, cart_id: str, text: str) -> tuple[list[tuple[int, int]], int]:
+    """(offset_mapping, n_tokens) for `text`, tokenized EXACTLY as onboarding did — the same call
+    shape as onboard_cag_via_engine's build (`tok(text, add_special_tokens=False)` truncated to
+    CAG_MAX_DOC_TOK) — but ALSO asking for return_offsets_mapping so each token's char range is
+    known. Cached per (cart_id, blake2b(text)) so repeat queries on the same spanned doc skip
+    re-tokenization; a tiny hand-rolled LRU (functools.lru_cache can't key on the unhashable
+    tokenizer, and the mapping is a list). n_tokens is the truncated length the char->token mapper
+    clips against."""
+    key = (cart_id, hashlib.blake2b(text.encode("utf-8"), digest_size=16).hexdigest())
+    hit = _offset_cache.get(key)
+    if hit is not None:
+        return hit
+    enc = tok(text, add_special_tokens=False, return_offsets_mapping=True)
+    offsets = [(int(a), int(b)) for a, b in enc["offset_mapping"][:CAG_MAX_DOC_TOK]]
+    n_tokens = min(len(enc["input_ids"]), CAG_MAX_DOC_TOK)
+    val = (offsets, n_tokens)
+    with _offset_cache_lock:
+        if len(_offset_cache) >= _OFFSET_CACHE_MAX:
+            # Cheap FIFO eviction (dicts preserve insertion order) — the mapping is a cache, not a
+            # correctness dependency, so exact-LRU isn't worth a heavier structure.
+            _offset_cache.pop(next(iter(_offset_cache)), None)
+        _offset_cache[key] = val
+    return val
+
+
+def _resident_prefix(store, tok, doc_ids: list[str], doc_spans: dict[str, list[list[int]]],
+                     doc_texts: dict[str, str], vocab: int) -> tuple[list[int], int, list[dict], list[str]]:
+    """Build the RESIDENT-QRC packed prefix: doc 1 (top-1) loads its FULL cart; every other id in
+    `doc_spans` loads only the token ranges its char spans resolve to. Returns
+    (placeholder_ids, total_p, registry_entries, kept_span_ids) where:
+
+      placeholder_ids   the sum-of-segment-lengths placeholder run (KV overwritten by the connector),
+                        docs in doc_ids order, spans ascending within a doc — all loaded segments form
+                        ONE packed contiguous prefix (the connector contract is prefix-only, so no text
+                        may sit between them; attribution moves to the computed question turn).
+      total_p           loaded KV token count (the resident metric — same accounting as _cart_prefix_ids).
+      registry_entries  the DICT-mode registry list: one {cart_id, src_start, src_len, dest} per segment,
+                        dest = the segment's cumulative offset in the packed prefix. Full-cart doc 1 is a
+                        single segment covering its whole cart (src_start=0, src_len=p).
+      kept_span_ids     the spanned ids (doc_ids[1:] subset) that contributed >=1 non-empty segment, in
+                        doc order — the attribution list the question turn names (a doc whose spans all
+                        resolved empty is dropped from BOTH the prefix and attribution).
+
+    Guards live in the caller (serve_query_resident) so a bad request 400s before any engine work."""
+    prefix: list[int] = []
+    entries: list[dict] = []
+    kept_span_ids: list[str] = []
+    total_p = 0
+    for pos, d in enumerate(doc_ids):
+        p, tids = _cart_meta(store, d)
+        if pos == 0 or d not in doc_spans:
+            # Full-cart load: one segment covering the whole cart at the current packed offset.
+            if CART_PLACEHOLDER == "real" and tids is not None:
+                if len(tids) != p:
+                    raise ValueError(
+                        f"cart {d!r} has {len(tids)} token_ids but p={p} — refusing to build a "
+                        "resident prefix whose placeholder count disagrees with the cart's KV length")
+                prefix.extend(int(t) for t in tids)
+            else:
+                prefix.extend(_placeholder_ids(p, vocab))
+            entries.append({"cart_id": str(d), "src_start": 0, "src_len": p, "dest": total_p})
+            total_p += p
+            continue
+        # Span load: resolve this doc's char spans to token ranges over its re-tokenized text.
+        offsets, n_tokens = _offset_mapping(tok, d, doc_texts[d])
+        ranges = _spans_to_token_ranges(offsets, doc_spans[d], min(n_tokens, p))
+        if not ranges:
+            continue  # every span resolved empty -> drop the doc from prefix AND attribution
+        for tok_start, tok_end in ranges:
+            seg_len = tok_end - tok_start
+            if CART_PLACEHOLDER == "real" and tids is not None and len(tids) == p:
+                prefix.extend(int(t) for t in tids[tok_start:tok_end])
+            else:
+                prefix.extend(_placeholder_ids(seg_len, vocab))
+            entries.append({"cart_id": str(d), "src_start": tok_start,
+                            "src_len": seg_len, "dest": total_p})
+            total_p += seg_len
+        kept_span_ids.append(d)
+    return prefix, total_p, entries, kept_span_ids
+
+
+def _resident_user_turn(question: str, titles: list[str]) -> str:
+    """The user-turn text for a RESIDENT-QRC request. Carries NO document text (all evidence is loaded
+    KV in the prefix); when spans are in play it lists source attribution in doc order so the model can
+    name where an answer came from, then demands a direct answer (same anti-deliberation rule as the
+    hybrid turn). `titles` are the spanned docs' titles (doc 2..k that survived span resolution), in
+    order — supplied by the control plane, never derived here. Empty titles -> the bare question (a
+    resident serve with no surviving spans is a pure top-1 cart serve)."""
+    if not titles:
+        return question
+    if len(titles) == 1:
+        attribution = f"Above: the primary document, then excerpts from: {titles[0]}."
+    else:
+        attribution = ("Above: the primary document, then excerpts from: "
+                       + "; ".join(titles[:-1]) + f"; and {titles[-1]}.")
+    return (f"{attribution}\n\nAnswer directly and concisely; do not restate the question or narrate "
+            f"your search.\n\nQuestion: {question}")
+
+
 def _cart_user_turn(question: str, context: str) -> str:
     """The user-turn text for a cart request. Empty context -> today's bare `question` (byte-for-byte
     the resident-only serve path). Non-empty context (QRC hybrid) -> the routed excerpts of docs 2..k
@@ -619,7 +781,10 @@ def _cart_user_turn(question: str, context: str) -> str:
 
 
 def serve_query(doc_ids: list[str], question: str, max_tokens: int = 64,
-                history: list | None = None, context: str = "") -> dict:
+                history: list | None = None, context: str = "",
+                doc_spans: dict[str, list[list[int]]] | None = None,
+                doc_texts: dict[str, str] | None = None,
+                doc_titles: dict[str, str] | None = None) -> dict:
     """Answer `question` from the resident KV of `doc_ids` (CAG carts) — the product serve path. The
     placeholder prefix is sum(cart.p) random tokens (KV overwritten by the connector) + the templated
     conversation; only the conversation is actually prefilled (the cart KV is resident), which is
@@ -627,15 +792,22 @@ def serve_query(doc_ids: list[str], question: str, max_tokens: int = 64,
     ON TOP of the resident corpus KV. `context` (QRC hybrid) = additional real-token context — the
     routed chunks of the non-top retrieved docs — folded into the user turn like serve_rag; it is
     prefilled ON TOP of the resident cart KV, so prompt_tokens grows by exactly the context length
-    (correct and desired). Returns {answer, metrics} with MEASURED tokens + latency."""
+    (correct and desired). `doc_spans` (RESIDENT-QRC) instead loads docs 2..k as KV spans routed via
+    the dict-mode registry (see _prompt_ids_resident). Returns {answer, metrics} with MEASURED
+    tokens + latency."""
     if not doc_ids:
         raise ValueError("doc_ids required")
     st = _get()
     tok, store = st["tok"], st["store"]
-    vocab = getattr(tok, "vocab_size", None) or len(tok)
-    prefix, total_p = _cart_prefix_ids(store, list(doc_ids), vocab)
-    prompt_ids, n_chat = _compose_cart_prompt(tok, prefix, _cart_user_turn(question, context), history)
-    ro, wall_ms = _generate(prompt_ids, list(doc_ids), max_tokens)
+    if doc_spans:
+        prompt_ids, n_chat, total_p, route = _prompt_ids_resident(
+            tok, store, doc_ids, question, doc_spans, doc_texts or {}, doc_titles or {}, history)
+    else:
+        vocab = getattr(tok, "vocab_size", None) or len(tok)
+        prefix, total_p = _cart_prefix_ids(store, list(doc_ids), vocab)
+        prompt_ids, n_chat = _compose_cart_prompt(tok, prefix, _cart_user_turn(question, context), history)
+        route = list(doc_ids)
+    ro, wall_ms = _generate(prompt_ids, route, max_tokens)
     ans = _strip_think(tok.decode(list(ro.outputs[0].token_ids), skip_special_tokens=True))
     return {"answer": ans, "metrics": _req_metrics(ro, wall_ms, n_chat, total_p)}
 
@@ -719,24 +891,74 @@ def _prompt_ids(tok, store, doc_ids: list[str], question: str,
     return prompt_ids, n_chat, total_p
 
 
+def _validate_resident_request(doc_ids: list[str], doc_spans: dict[str, list[list[int]]],
+                               doc_texts: dict[str, str]) -> None:
+    """Guard a RESIDENT-QRC request BEFORE any engine work (raises ValueError -> the routes map that to
+    400). Two hard rules: a span map for an id NOT in doc_ids is a client bug (the id can't be loaded),
+    and the FIRST doc must never be span-loaded (top-1 is always the full resident cart). A spanned doc
+    missing its text can't be char->token mapped, so it's rejected here too (the engine never reads
+    storage — the control plane must supply doc_texts for every spanned id)."""
+    if not doc_ids:
+        raise ValueError("doc_ids required")
+    id_set = set(doc_ids)
+    for cid in doc_spans:
+        if cid not in id_set:
+            raise ValueError(f"doc_spans id {cid!r} is not in doc_ids")
+        if doc_texts.get(cid) is None:
+            raise ValueError(f"doc_spans id {cid!r} has no doc_texts entry (engine cannot re-tokenize it)")
+    if doc_ids[0] in doc_spans:
+        raise ValueError("the first doc_id is always the full-cart top-1 and must not be span-loaded")
+
+
+def _prompt_ids_resident(tok, store, doc_ids: list[str], question: str,
+                         doc_spans: dict[str, list[list[int]]], doc_texts: dict[str, str],
+                         doc_titles: dict[str, str],
+                         history: list | None = None) -> tuple[list[int], int, int, list[dict]]:
+    """(prompt token ids, prefilled-conversation length, resident KV tokens, registry_entries) for a
+    RESIDENT-QRC request. Doc 1 loads its full cart; every id in doc_spans loads only its routed token
+    ranges (see _resident_prefix). The chat turn carries NO document text — only the ordered attribution
+    of the SPANNED docs that survived resolution (a doc whose spans all resolved empty is dropped from
+    both the prefix and the attribution). registry_entries is the DICT-mode list the connector routes
+    on (cart_id/src_start/src_len/dest). Guards run first via _validate_resident_request."""
+    _validate_resident_request(doc_ids, doc_spans, doc_texts)
+    vocab = getattr(tok, "vocab_size", None) or len(tok)
+    prefix, total_p, entries, kept_span_ids = _resident_prefix(
+        store, tok, list(doc_ids), doc_spans, doc_texts, vocab)
+    # Attribution names only the SPANNED docs that contributed KV, in doc order; titles come from the
+    # control plane (never derived here). A kept id with no supplied title falls back to the id.
+    titles = [doc_titles.get(d, d) for d in kept_span_ids]
+    prompt_ids, n_chat = _compose_cart_prompt(tok, prefix, _resident_user_turn(question, titles), history)
+    return prompt_ids, n_chat, total_p, entries
+
+
 async def serve_query_async(doc_ids: list[str], question: str, max_tokens: int = 64,
-                            history: list | None = None, context: str = "") -> dict:
+                            history: list | None = None, context: str = "",
+                            doc_spans: dict[str, list[list[int]]] | None = None,
+                            doc_texts: dict[str, str] | None = None,
+                            doc_titles: dict[str, str] | None = None) -> dict:
     """Concurrent-safe serve: explicit uuid request_id keys the registry, so vLLM can batch many
     in-flight requests and each still routes to its own cart. No lock, no counter. `context` (QRC
     hybrid) prefills the routed chunks of the non-top docs on TOP of the resident cart KV (see
-    _prompt_ids). Returns {answer, metrics} with the same MEASURED shape as the sync path (wall-clock
-    under concurrency includes queueing — that's the honest number a fleet sees)."""
+    _prompt_ids). `doc_spans` (RESIDENT-QRC) instead LOADS those docs' KV as spans: doc 1 full-cart,
+    docs 2..k only their routed token ranges, all packed into one prefix and routed via the dict-mode
+    registry (see _prompt_ids_resident). Returns {answer, metrics} with the same MEASURED shape as the
+    sync path (wall-clock under concurrency includes queueing — the honest number a fleet sees)."""
     st = _aget()
     tok, reg, store = st["tok"], st["reg"], st["store"]
-    prompt, q_len, total_p = _prompt_ids(tok, store, doc_ids, question, history, context)
+    if doc_spans:
+        prompt, q_len, total_p, route = _prompt_ids_resident(
+            tok, store, doc_ids, question, doc_spans, doc_texts or {}, doc_titles or {}, history)
+    else:
+        prompt, q_len, total_p = _prompt_ids(tok, store, doc_ids, question, history, context)
+        route = list(doc_ids)
     rid = uuid.uuid4().hex
-    reg.set(rid, list(doc_ids))
+    reg.set(rid, route)
     final = None
     t0 = time.perf_counter()
     try:
         async for out in st["engine"].generate(
                 _tokens_prompt(prompt),
-                _sampling(doc_ids, max_tokens=max_tokens), rid):
+                _sampling(route, max_tokens=max_tokens), rid):
             final = out
     finally:
         reg.pop(rid)
@@ -1087,12 +1309,23 @@ if _HAS_FASTAPI:
         return await call_next(request)
 
     class QueryReq(BaseModel):
-        doc_ids: list[str]        # which cartridge(s) to serve (control plane retrieved these)
+        doc_ids: list[str]        # which cartridge(s) to serve (control plane retrieved these); the
+                                  # FIRST id is always the full-cart top-1 (RESIDENT-QRC + legacy).
         question: str
         max_tokens: int = 64
         history: list[dict] = []  # prior turns [{role, content}] — small prefill atop resident KV
         context: str = ""         # QRC hybrid: routed real-text chunks of the non-top docs, prefilled
                                   # atop the resident cart KV (empty -> today's resident-only path)
+        # RESIDENT-QRC serve mode: instead of prefilling docs 2..k as text `context`, LOAD their KV as
+        # spans. doc_spans maps a spanned cart_id -> CHAR spans [[start,end),...] into that doc's
+        # ORIGINAL text; the engine re-tokenizes (add_special_tokens=False, truncated to CAG_MAX_DOC_TOK,
+        # exactly as onboarding did) to map each char span to a token range and loads only those ranges.
+        # doc_texts supplies the served text per spanned id (the engine never reads storage); doc_titles
+        # supplies the attribution titles named in the question turn (never derived here). All three are
+        # None on the legacy/hybrid path, which is byte-identical to today.
+        doc_spans: dict[str, list[list[int]]] | None = None
+        doc_texts: dict[str, str] | None = None
+        doc_titles: dict[str, str] | None = None
 
     class RagReq(BaseModel):
         context: str              # the retrieved documents RAG re-prefills (control plane assembled these)
@@ -1244,13 +1477,15 @@ if _HAS_FASTAPI:
     async def query(req: QueryReq):
         try:
             if SERVE_ASYNC:                       # batched concurrent serving (measured, incl. queueing)
-                result = await serve_query_async(req.doc_ids, req.question, req.max_tokens,
-                                                 req.history, req.context)
+                result = await serve_query_async(
+                    req.doc_ids, req.question, req.max_tokens, req.history, req.context,
+                    doc_spans=req.doc_spans, doc_texts=req.doc_texts, doc_titles=req.doc_titles)
             else:                                 # proven one-at-a-time path (measured)
                 # serve_query blocks on the GPU for the whole generation; run it in
                 # the threadpool so the event loop (and /health) stays responsive.
                 result = await run_in_threadpool(
-                    serve_query, req.doc_ids, req.question, req.max_tokens, req.history, req.context)
+                    serve_query, req.doc_ids, req.question, req.max_tokens, req.history, req.context,
+                    req.doc_spans, req.doc_texts, req.doc_titles)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         except LookupError as e:
@@ -1346,12 +1581,24 @@ if _HAS_FASTAPI:
     @app.post("/query_stream")
     async def query_stream(req: QueryReq):
         """Token-streaming cart serve (SSE). Requires the async engine (SERVE_ASYNC=1). `context`
-        (QRC hybrid) rides through as extra real-token prefill atop the resident cart KV."""
+        (QRC hybrid) rides through as extra real-token prefill atop the resident cart KV; `doc_spans`
+        (RESIDENT-QRC) instead loads docs 2..k as KV spans routed by the dict-mode registry (see
+        _prompt_ids_resident). Request guards (bad span map / span-loading the top doc) 400 here,
+        before the stream opens."""
         st = _require_async()
-        prompt, q_len, total_p = _prompt_ids(st["tok"], st["store"], req.doc_ids,
-                                             req.question, req.history, req.context)
+        try:
+            if req.doc_spans:
+                prompt, q_len, total_p, route = _prompt_ids_resident(
+                    st["tok"], st["store"], req.doc_ids, req.question, req.doc_spans,
+                    req.doc_texts or {}, req.doc_titles or {}, req.history)
+            else:
+                prompt, q_len, total_p = _prompt_ids(st["tok"], st["store"], req.doc_ids,
+                                                     req.question, req.history, req.context)
+                route = list(req.doc_ids)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
         return StreamingResponse(
-            _stream_generate(prompt, list(req.doc_ids), req.max_tokens, q_len, total_p,
+            _stream_generate(prompt, route, req.max_tokens, q_len, total_p,
                              want_conf=True),   # cart side reports confidence for the adaptive router
             media_type="text/event-stream", headers=_SSE_HEADERS)
 

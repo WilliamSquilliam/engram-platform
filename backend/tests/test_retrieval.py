@@ -1,8 +1,15 @@
 """Control-plane retrieval: the production hybrid backend (bm25s lexical + RRF fusion, dense stage
 OFF in tests), the doc_id slug, and backend selection. No torch/GPU. RETRIEVAL_DENSE=off (conftest)
 so fastembed never downloads a model — hybrid runs lexical-only, fused via the SAME RRF path."""
+import pytest
 from app import config, ml_client, retrieval
-from app.retrieval import _lexical_ranking, doc_id_for, rrf_fuse
+from app.retrieval import (
+    _lexical_ranking,
+    doc_id_for,
+    dynamic_k,
+    rrf_fuse,
+    rrf_fuse_scored,
+)
 
 
 def test_doc_id_for_matches_onboarding_slug():
@@ -51,6 +58,113 @@ def test_rrf_deterministic_tiebreak_on_doc_id():
 def test_rrf_empty():
     assert rrf_fuse([], k=3) == []
     assert rrf_fuse([[], []], k=3) == []
+
+
+# --- dynamic top-k cutoff math ------------------------------------------------------------------
+
+def test_rrf_fuse_scored_returns_descending_scores():
+    """rrf_fuse_scored is the single source of the fused scores: (id, score) pairs, descending by
+    score, doc_id-ascending tie-break — and rrf_fuse is exactly its ids sliced."""
+    scored = rrf_fuse_scored([["a", "b", "c"], ["b", "a", "c"]])
+    ids = [d for d, _ in scored]
+    scores = [s for _, s in scored]
+    assert ids == ["a", "b", "c"]                       # same order rrf_fuse yields
+    assert scores == sorted(scores, reverse=True)       # descending
+    assert rrf_fuse([["a", "b", "c"], ["b", "a", "c"]], k=3) == ids
+
+
+def test_dynamic_k_keeps_close_scoring_docs():
+    """A runner-up within ratio of the top's RELEVANCE rides along; one below the threshold is cut.
+    Relevance is the dense-cosine/bm25 signal, NOT the RRF fused score (rank-derived RRF scores sit
+    within ~2% of each other and can never be ratio-thresholded)."""
+    rel = {"a": 1.0, "b": 0.7, "c": 0.5, "d": 0.1}
+    # ratio 0.6 -> threshold 0.6: b(0.7)>=0.6 kept, c(0.5) and d(0.1) cut.
+    assert dynamic_k(["a", "b", "c", "d"], rel, k=4, ratio=0.6) == ["a", "b"]
+
+
+def test_dynamic_k_tests_runner_ups_independently():
+    """Relevance is not monotone in fused order: a weak 2nd must not shadow a strong 3rd (inclusion
+    is about evidence, not re-ranking) — no early break."""
+    rel = {"a": 1.0, "b": 0.2, "c": 0.9}
+    assert dynamic_k(["a", "b", "c"], rel, k=3, ratio=0.6) == ["a", "c"]
+
+
+def test_dynamic_k_ratio_boundary_is_inclusive():
+    """A relevance EXACTLY at ratio*top is kept (>= boundary, not >)."""
+    rel = {"a": 1.0, "b": 0.6, "c": 0.59}
+    assert dynamic_k(["a", "b", "c"], rel, k=3, ratio=0.6) == ["a", "b"]
+
+
+def test_dynamic_k_always_keeps_at_least_one():
+    """Even when every follower is far below threshold, the top doc is always kept (never 0)."""
+    rel = {"a": 1.0, "b": 0.01, "c": 0.001}
+    assert dynamic_k(["a", "b", "c"], rel, k=3, ratio=0.9) == ["a"]
+
+
+def test_dynamic_k_capped_at_k():
+    """A very low ratio would admit everyone, but k caps the result."""
+    rel = {"a": 1.0, "b": 0.9, "c": 0.8, "d": 0.7}
+    assert dynamic_k(["a", "b", "c", "d"], rel, k=2, ratio=0.05) == ["a", "b"]
+
+
+def test_dynamic_k_nonpositive_top_relevance_falls_back_to_flat_topk():
+    """bm25 all-zeros edge (or a missing top score): nothing to threshold on -> flat top-k."""
+    assert dynamic_k(["a", "b", "c"], {}, k=2, ratio=0.6) == ["a", "b"]
+
+
+def test_dynamic_k_empty_input():
+    assert dynamic_k([], {}, k=3, ratio=0.6) == []
+
+
+def test_dynamic_k_on_routes_through_dynamic_k(client, auth, make_corpus, cart_id, monkeypatch):
+    """RETRIEVAL_DYNAMIC_K=on makes retrieve() apply dynamic_k over the fused ORDER with a real
+    RELEVANCE map (bm25 scores here — dense is off in tests) and the configured ratio. Assert the
+    wiring directly: dynamic_k gets the ordered ids + a per-doc relevance dict + config ratio, and
+    its result is what retrieve() returns — independent of score magnitudes on a tiny corpus."""
+    monkeypatch.setattr(config, "RETRIEVAL_DYNAMIC_K", "on")
+    monkeypatch.setattr(config, "RETRIEVAL_DYNK_RATIO", 0.42)
+    seen = {}
+
+    def _spy(ordered_ids, relevance, k, ratio):
+        seen["ordered"] = ordered_ids
+        seen["relevance"] = relevance
+        seen["k"] = k
+        seen["ratio"] = ratio
+        return [ordered_ids[0]]   # pretend the cut kept only the top doc
+
+    monkeypatch.setattr(retrieval, "dynamic_k", _spy)
+    headers, _ = auth
+    cid = make_corpus(headers)
+    client.post(f"/corpora/{cid}/documents",
+                files=[("files", ("vela.txt", "The Vela observatory measures supernovae",
+                                  "text/plain"))], headers=headers)
+    client.post(f"/corpora/{cid}/documents",
+                files=[("files", ("recipe.txt", "a cooking recipe about onions and garlic",
+                                  "text/plain"))], headers=headers)
+    ids = retrieval.retrieve(cid, "Vela observatory", 3)
+    assert seen["ratio"] == 0.42 and seen["k"] == 3         # config ratio + requested k threaded in
+    assert seen["ordered"] and isinstance(seen["relevance"], dict)   # ordered ids + relevance map
+    # bm25 relevance (dense off in tests): the on-topic doc must carry positive relevance.
+    assert seen["relevance"].get(seen["ordered"][0], 0.0) > 0.0
+    assert ids == [seen["ordered"][0]]                      # retrieve returns dynamic_k's output
+
+
+def test_dynamic_k_off_is_flat_topk(client, auth, make_corpus, cart_id, monkeypatch):
+    """RETRIEVAL_DYNAMIC_K=off (default) keeps today's flat top-k behavior — both docs returned, and
+    dynamic_k is never called (the flat slice path)."""
+    monkeypatch.setattr(config, "RETRIEVAL_DYNAMIC_K", "off")
+    monkeypatch.setattr(retrieval, "dynamic_k",
+                        lambda *a, **k: pytest.fail("off mode must not call dynamic_k"))
+    headers, _ = auth
+    cid = make_corpus(headers)
+    client.post(f"/corpora/{cid}/documents",
+                files=[("files", ("vela.txt", "The Vela observatory measures supernovae",
+                                  "text/plain"))], headers=headers)
+    client.post(f"/corpora/{cid}/documents",
+                files=[("files", ("recipe.txt", "a cooking recipe about onions and garlic",
+                                  "text/plain"))], headers=headers)
+    ids = retrieval.retrieve(cid, "tell me about the Vela observatory", 3)
+    assert len(ids) == 2   # flat top-k returns both docs regardless of score gap
 
 
 # --- end-to-end hybrid over a real corpus (lexical-only in tests) ---------------------------------

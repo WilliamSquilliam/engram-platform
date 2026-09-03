@@ -129,18 +129,53 @@ def _tokens(s: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------- reciprocal rank fusion
+def rrf_fuse_scored(ranked_lists: list[list[str]], rrf_k: int = _RRF_K) -> list[tuple[str, float]]:
+    """The scored fusion under RRF: [(doc_id, fused_score), ...] in descending score order (doc_id
+    ascending as the deterministic tie-break). This is the single source of the fused scores — rrf_fuse
+    slices its ids for the flat top-k, and dynamic_k reads the scores to cut by relative threshold, so
+    neither recomputes the fusion. Each list contributes 1/(rrf_k + rank) to a doc; a doc absent from a
+    list just earns nothing from it."""
+    scores: dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, doc_id in enumerate(ranked):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank)
+    return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def rrf_fuse(ranked_lists: list[list[str]], k: int, rrf_k: int = _RRF_K) -> list[str]:
     """Reciprocal Rank Fusion over several ranked doc_id lists -> the fused top-k doc_ids. Each list
     contributes 1/(rrf_k + rank) to a doc's score (rank is 0-based). Ties break DETERMINISTICALLY on
     doc_id so tests are stable. Lists may differ in length / membership; a doc absent from a list just
     earns nothing from it."""
-    scores: dict[str, float] = {}
-    for ranked in ranked_lists:
-        for rank, doc_id in enumerate(ranked):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank)
-    # Highest score first; doc_id ascending as the deterministic tie-break.
-    fused = sorted(scores, key=lambda d: (-scores[d], d))
-    return fused[:k]
+    return [d for d, _ in rrf_fuse_scored(ranked_lists, rrf_k)][:k]
+
+
+def dynamic_k(ordered_ids: list[str], relevance: dict[str, float], k: int,
+              ratio: float) -> list[str]:
+    """Dynamic top-k: keep the fused ORDER (RRF decides ranking) but admit each runner-up doc only if
+    its RELEVANCE is >= ratio * the top doc's relevance, capped at k, always >= 1.
+
+    Why relevance is a separate signal and NOT the RRF fused score: RRF scores are RANK-derived
+    (~1/(60+r) summed over lists), so adjacent docs always score within ~2% of each other and a
+    ratio threshold on them never cuts anything — dynamic-k would silently always return k docs
+    (caught in review before the first run). The signal here is the dense cosine when the dense
+    stage ran, else the raw bm25 score — continuous relevance, meaningfully thresholdable.
+
+    Runner-ups are tested INDEPENDENTLY (no early break): relevance is not monotone in fused order,
+    and inclusion is about whether a doc carries evidence, not about re-ranking. A top doc with
+    non-positive relevance (bm25 all-zeros edge) keeps the flat top-k — can't threshold on nothing."""
+    if not ordered_ids:
+        return []
+    top_rel = relevance.get(ordered_ids[0], 0.0)
+    if top_rel <= 0.0:
+        return ordered_ids[:k]
+    kept = [ordered_ids[0]]
+    for doc_id in ordered_ids[1:]:
+        if len(kept) >= k:
+            break
+        if relevance.get(doc_id, 0.0) >= ratio * top_rel:
+            kept.append(doc_id)
+    return kept
 
 
 # --------------------------------------------------------------------------- dense embedder singleton
@@ -262,21 +297,27 @@ class _CorpusIndex:
                     logger.warning("dense index build failed for this corpus (lexical-only): %s", exc)
 
 
-def _lexical_rank_cached(query: str, idx: "_CorpusIndex") -> list[str]:
-    """Query-side-only bm25 ranking against the index's prebuilt bm25 artifacts. Same output
-    contract as _lexical_ranking (full ranked list, dropped docs appended in doc_id order)."""
+def _lexical_rank_cached(query: str, idx: "_CorpusIndex") -> tuple[list[str], dict[str, float]]:
+    """Query-side-only bm25 ranking against the index's prebuilt bm25 artifacts. Returns the full
+    ranked list (dropped docs appended in doc_id order, as _lexical_ranking) PLUS the raw bm25
+    scores by doc_id — the dynamic-k fallback relevance signal (docs bm25 dropped score 0.0)."""
     import bm25s
     q = bm25s.tokenize(query, stopwords="en", show_progress=False)
-    order, _scores = idx.bm25.retrieve(q, k=len(idx.doc_ids), show_progress=False)
+    order, scores = idx.bm25.retrieve(q, k=len(idx.doc_ids), show_progress=False)
     ranked = [idx.doc_ids[i] for i in order[0]]
+    by_id = {idx.doc_ids[i]: float(s) for i, s in zip(order[0], scores[0])}
     seen = set(ranked)
     ranked += sorted(d for d in idx.doc_ids if d not in seen)
-    return ranked
+    return ranked, by_id
 
 
-def _dense_rank_cached(query: str, idx: "_CorpusIndex") -> list[str] | None:
+def _dense_rank_cached(query: str,
+                       idx: "_CorpusIndex") -> tuple[list[str], dict[str, float]] | None:
     """Query-side-only dense ranking against the index's prebuilt normalized doc embeddings; only
-    the QUERY is embedded per call. None (fuse lexical-only) when dense is off/unavailable."""
+    the QUERY is embedded per call. Returns (ranked doc_ids, cosine-by-doc_id) — the cosines are
+    dynamic-k's PRIMARY relevance signal (see dynamic_k: RRF fused scores are rank-derived and
+    nearly equal between neighbors, so they cannot be ratio-thresholded). None (fuse lexical-only)
+    when dense is off/unavailable."""
     if idx.doc_vecs is None:
         return None
     embedder = _dense_embedder()
@@ -288,7 +329,8 @@ def _dense_rank_cached(query: str, idx: "_CorpusIndex") -> list[str] | None:
         q /= (np.linalg.norm(q) + 1e-12)
         sims = idx.doc_vecs @ q
         order = sorted(range(len(idx.doc_ids)), key=lambda i: (-float(sims[i]), idx.doc_ids[i]))
-        return [idx.doc_ids[i] for i in order]
+        return ([idx.doc_ids[i] for i in order],
+                {idx.doc_ids[i]: float(sims[i]) for i in range(len(idx.doc_ids))})
     except Exception as exc:  # noqa: BLE001 — degrade to lexical-only this query, never raise
         logger.warning("dense ranking failed this query, using lexical-only: %s", exc)
         return None
@@ -368,10 +410,20 @@ def _hybrid_rank(corpus_id: str, tenant_id: str, question: str, k: int) -> tuple
         return [], {}
     # Cached-artifact ranking: only the QUERY is tokenized/embedded here — the corpus-side bm25
     # index and doc embeddings were built once with the index (see _CorpusIndex).
-    lexical = _lexical_rank_cached(question, idx)
+    lexical, bm25_scores = _lexical_rank_cached(question, idx)
     dense = _dense_rank_cached(question, idx)
-    ranked_lists = [lexical] if dense is None else [lexical, dense]
-    return rrf_fuse(ranked_lists, k), idx.texts
+    ranked_lists = [lexical] if dense is None else [lexical, dense[0]]
+    # Fuse ONCE for the ORDER; dynamic-k then cuts on a real RELEVANCE signal (dense cosine when
+    # available, else raw bm25) — never on the rank-derived RRF scores (see dynamic_k's docstring).
+    # Dynamic-k is off by default (today's behavior).
+    scored = rrf_fuse_scored(ranked_lists)
+    ordered = [d for d, _ in scored]
+    if config.RETRIEVAL_DYNAMIC_K == "on":
+        relevance = dense[1] if dense is not None else bm25_scores
+        ids = dynamic_k(ordered, relevance, k, config.RETRIEVAL_DYNK_RATIO)
+    else:
+        ids = ordered[:k]
+    return ids, idx.texts
 
 
 def invalidate_index(corpus_id: str) -> None:
@@ -478,6 +530,88 @@ def route_chunks_context(corpus_id: str, question: str, doc_ids: list[str]) -> s
     routed = chunking.route_chunks(question, docs, embedder=embedder, q_vec=q_vec,
                                    budget_tokens=config.QRC_BUDGET_TOKENS)
     return chunking.compose_context(routed)
+
+
+def route_chunk_spans(corpus_id: str, question: str,
+                      doc_ids: list[str]) -> dict[str, list[list[int]]]:
+    """RESIDENT-QRC serving: per routed doc (docs 2..k), the CHAR spans [[start,end),...] of the SAME
+    chunks route_chunks_context would compose — but returned as char ranges into each doc's original
+    text, so the engine can LOAD those spans' KV instead of re-prefilling their text.
+
+    Identical selection to route_chunks_context (reuse chunking.route_chunks + the idx.chunk_vecs
+    cache + the sidecar descs), then map the SELECTED chunk_indices back to char spans via
+    chunking.chunk_spans(served_text) — the same deterministic spans onboarding tokenized. Spans are
+    ascending in source order within a doc (route_chunks sorts its picks). A doc selected whole (at or
+    under budget) returns spans covering all its chunks. Deterministic; unknown doc_ids raise KeyError
+    (mirrors route_chunks_context); dense embed failures degrade INSIDE chunking (lexical-only), never
+    raising here. Returns {} for an empty doc_ids (topk=1: nothing to span-load)."""
+    if not doc_ids:
+        return {}
+    idx = _corpus_index(corpus_id, _tenant_for_corpus(corpus_id))
+    missing = [d for d in doc_ids if d not in idx.texts]
+    if missing:
+        raise KeyError(f"unknown doc_ids for this corpus: {missing}")
+    embedder = _dense_embedder()
+    docs = []
+    for d in doc_ids:
+        descs = idx.chunk_descs.get(d)
+        # Reuse the same embed-once-per-doc chunk vectors route_chunks_context builds (a rebuild
+        # drops them); a failed embed caches None so the dense stage degrades without retrying.
+        if embedder is not None and d not in idx.chunk_vecs:
+            idx.chunk_vecs[d] = chunking.embed_normalized(
+                embedder, chunking.chunk_index_texts(idx.texts[d], descs))
+        docs.append({"doc_id": d, "text": idx.texts[d], "descs": descs,
+                     "vecs": idx.chunk_vecs.get(d)})
+    q_vec = None
+    if embedder is not None:
+        qv = chunking.embed_normalized(embedder, [question])
+        q_vec = qv[0] if qv is not None else None
+    routed = chunking.route_chunks(question, docs, embedder=embedder, q_vec=q_vec,
+                                   budget_tokens=config.QRC_BUDGET_TOKENS)
+    # Map the selected chunk ordinals back to char spans. route_chunks returns chunk_indices parallel
+    # to chunking.chunk_spans(text); a doc that dropped out of routing (empty text) is simply absent.
+    out: dict[str, list[list[int]]] = {}
+    routed_by_id = {r["doc_id"]: r for r in routed}
+    for d in doc_ids:
+        r = routed_by_id.get(d)
+        if r is None:
+            continue
+        spans = chunking.chunk_spans(idx.texts[d])
+        picked = [i for i in r["chunk_indices"] if 0 <= i < len(spans)]
+        if picked:
+            out[d] = [[spans[i][0], spans[i][1]] for i in picked]
+    return out
+
+
+def served_texts_for(corpus_id: str, doc_ids: list[str]) -> dict[str, str]:
+    """{cart_id: served_text} for the given doc_ids, read from the SAME cached index route_chunk_spans
+    maps its char spans against — so the engine re-tokenizes exactly the text the spans index into
+    (a different text source could shift char offsets and mis-map a span to the wrong tokens). Unknown
+    ids raise KeyError (mirrors route_chunk_spans). The engine needs this because it must not read
+    storage itself; the control plane hands it the text for every span-loaded doc."""
+    idx = _corpus_index(corpus_id, _tenant_for_corpus(corpus_id))
+    missing = [d for d in doc_ids if d not in idx.texts]
+    if missing:
+        raise KeyError(f"unknown doc_ids for this corpus: {missing}")
+    return {d: idx.texts[d] for d in doc_ids}
+
+
+def doc_titles_for(corpus_id: str, doc_ids: list[str]) -> dict[str, str]:
+    """{cart_id: title} for the given doc_ids — title = the document's first non-empty line, capped at
+    120 chars (mirrors doc_sources' title logic). The engine's RESIDENT-QRC attribution turn names
+    these titles; the control plane supplies them so the engine never derives a title. Unknown ids are
+    simply absent from the result (the engine falls back to the id)."""
+    tenant_id = _tenant_for_corpus(corpus_id)
+    by_id = {cart_id_for(tenant_id, fn): fn for fn in storage.list_doc_filenames(corpus_id)}
+    out: dict[str, str] = {}
+    for d in doc_ids:
+        fn = by_id.get(d)
+        if fn is None:
+            continue
+        text = storage.read_text(corpus_id, fn)
+        title = next((ln.strip() for ln in text.splitlines() if ln.strip()), d)
+        out[d] = title[:120]
+    return out
 
 
 def _doc_text(corpus_id: str, doc_id: str) -> str:

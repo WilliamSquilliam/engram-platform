@@ -35,10 +35,32 @@ class _StubRetriever:
     def __init__(self):
         self.doc_ids = [f"stubdoc_{i}" for i in range(5)]
         self.texts = {d: f"Stub document {d}. The stub fact is 42." for d in self.doc_ids}
+        # Fake fused scores (descending) so dynamic_k has something to cut: the top doc scores 1.0, each
+        # next 0.5x the last, so at ratio 0.6 only the top survives (a stable, checkable dynamic set).
+        self._scores = {d: 1.0 * (0.5 ** i) for i, d in enumerate(self.doc_ids)}
+
+    # `_by_id` mirrors HybridRetriever's id->text map — the resident arm reads it for doc_texts/titles.
+    @property
+    def _by_id(self):
+        return self.texts
 
     def retrieve_context(self, question: str, k: int):
         ids = self.doc_ids[:k]
         return ids, "\n\n".join(self.texts[d] for d in ids)
+
+    def dynamic_k(self, question, k_max, ratio):
+        # Mirror HybridRetriever.dynamic_k over the fake scores: keep the top, then each doc while its
+        # score >= ratio * top, capped at k_max, always >= 1.
+        threshold = ratio * self._scores[self.doc_ids[0]]
+        kept = [self.doc_ids[0]]
+        for d in self.doc_ids[1:]:
+            if len(kept) >= k_max:
+                break
+            if self._scores[d] >= threshold:
+                kept.append(d)
+            else:
+                break
+        return kept
 
     def route_chunks_context(self, question, doc_ids, budget_tokens=None, descs_by_doc=None):
         # Mirror HybridRetriever.route_chunks_context's contract shape: empty doc_ids -> '' (qrc
@@ -46,6 +68,12 @@ class _StubRetriever:
         if not doc_ids:
             return ""
         return "\n\n".join(self.texts.get(d, "") for d in doc_ids)
+
+    def route_chunk_spans(self, question, doc_ids, budget_tokens=None, descs_by_doc=None):
+        # Mirror HybridRetriever.route_chunk_spans: {doc_id: [[start,end)]} for the non-top docs. Empty
+        # doc_ids -> {} (resident degenerates to a pure top-1 cart serve). One span covering the whole
+        # stub text is enough to exercise the payload plumbing.
+        return {d: [[0, len(self.texts.get(d, ""))]] for d in doc_ids if self.texts.get(d)}
 
 
 # --- stub SSE server (Starlette ASGI app, driven in-process via httpx ASGITransport) ---------
@@ -88,12 +116,15 @@ def _build_stub_app():
     async def query_stream(request):
         await _enter()
         body = await request.json()
-        # QRC hybrid: /query_stream now accepts an optional `context` (routed real-text chunks of the
-        # non-top docs) alongside doc_ids. Record per-request whether it carried a non-empty context
-        # so the selftest can assert the qrc arm actually sends routed context and the cart arm never
-        # does. n_docs is tracked too (qrc serves exactly ONE resident cart: doc_ids=[top]).
+        # QRC hybrid: /query_stream accepts an optional `context` (routed real-text chunks of the
+        # non-top docs) alongside doc_ids; QRC RESIDENT instead sends `doc_spans` (per non-top doc, the
+        # loadable char spans) + doc_texts/doc_titles and NO context. Record per request: ctx flag,
+        # doc_ids count, and the spanned-id set — so the selftest can assert qrc_res spans EXACTLY the
+        # non-top docs with no context, and qrc records its per-question k (doc_ids length).
         state.setdefault("qs_ctx_flags", []).append(bool(body.get("context", "")))
         state.setdefault("qs_ndocs", []).append(len(body.get("doc_ids", [])))
+        state.setdefault("qs_doc_ids", []).append(list(body.get("doc_ids", [])))
+        state.setdefault("qs_span_ids", []).append(sorted((body.get("doc_spans") or {}).keys()))
         try:
             n = min(int(body.get("max_tokens", 8)), 8)
             return StreamingResponse(_sse(n), media_type="text/event-stream",
@@ -183,17 +214,20 @@ async def _run() -> int:
     check(resp["n_cartridges"] == 2, "onboard returns n_cartridges for the batch")
     check(state["onboard_docs"] == 2, "onboard_cag received the docs")
 
-    # --- tiny sweep: conc 1,2, 6 reqs per cell, all four arms (cart, qrc, rag_churn, rag_hot) ---
+    # --- tiny sweep: conc 1,2, 6 reqs per cell, all arms (cart, qrc, qrc_res, qrc_dyn, rag_churn,
+    # rag_hot) — the QRC family covers the hybrid-text, resident-span, and dynamic-k paths.
     all_cells: list[dict] = []
     for conc in (1, 2):
         state["peak"] = 0  # reset the concurrency high-water mark per cell group
-        for arm in ("cart", "qrc", "rag_churn", "rag_hot"):
+        for arm in ("cart", "qrc", "qrc_res", "qrc_dyn", "rag_churn", "rag_hot"):
             state["nonce_flags"] = []
             state["qs_ctx_flags"] = []
             state["qs_ndocs"] = []
+            state["qs_doc_ids"] = []
+            state["qs_span_ids"] = []
             cell = await h2h.run_cell(serve, retriever, arm, conc, questions,
                                       gen_tokens=6, topk=3, zipf_s=1.1, seed=conc,
-                                      reqs_override=6)
+                                      reqs_override=6, dynk_ratio=0.6)
             all_cells.append(cell)
             # closed-loop bound: peak in-flight during this cell must never exceed conc.
             check(state["peak"] <= conc,
@@ -216,6 +250,24 @@ async def _run() -> int:
             if arm == "cart":
                 check(state["qs_ctx_flags"] and not any(state["qs_ctx_flags"]),
                       "cart /query_stream carries NO context (resident-KV only)")
+            # qrc_res plumbing (topk=3): the resident arm serves ALL doc_ids (top full-cart + docs 2..k
+            # as spans) with NO context, and doc_spans covers EXACTLY the non-top docs (stubdoc_1/2).
+            if arm == "qrc_res":
+                non_top = sorted(retriever.doc_ids[1:3])
+                check(state["qs_ctx_flags"] and not any(state["qs_ctx_flags"]),
+                      "qrc_res /query_stream carries NO context (docs 2..k load as KV spans)")
+                check(state["qs_ndocs"] and all(n == 3 for n in state["qs_ndocs"]),
+                      "qrc_res serves ALL doc_ids (top full-cart + docs 2..k as spans) at topk=3")
+                check(state["qs_span_ids"] and all(s == non_top for s in state["qs_span_ids"]),
+                      "qrc_res sends doc_spans for EXACTLY the non-top docs (docs 2..k)")
+            # qrc_dyn plumbing: the arm records a per-question k, and at ratio 0.6 the stub keeps only
+            # the top doc (score 1.0; next 0.5 < 0.6), so k=1 and no spans go out (nothing to load).
+            if arm == "qrc_dyn":
+                check("mean_k" in cell, "qrc_dyn cell records mean_k (per-question docs kept)")
+                check(cell.get("mean_k") == 1.0,
+                      f"qrc_dyn keeps k=1 at ratio 0.6 over the stub scores (mean_k={cell.get('mean_k')})")
+                check(state["qs_span_ids"] and all(s == [] for s in state["qs_span_ids"]),
+                      "qrc_dyn sends NO spans when dynamic-k keeps only the top doc")
             # stats math + row schema.
             check(cell["reqs"] == 6, f"reqs honored (6) for the selftest cell arm={arm}")
             check(cell["ok"] == 6, f"all 6 requests ok for arm={arm} conc={conc}")

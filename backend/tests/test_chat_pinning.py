@@ -22,9 +22,10 @@ def _to_vllm(monkeypatch):
 @pytest.fixture()
 def fake_inference(monkeypatch):
     """Stand-in for the vLLM Inference Service /query. Deterministic answer + minimal metrics.
-    Accepts the QRC `context` kwarg (empty on this single-doc pinning path) so the stub matches
-    ml_client.inference_query's signature."""
-    def _iq(doc_ids, question, max_tokens=96, history=None, context=""):
+    Accepts the QRC `context` kwarg plus the resident span kwargs (doc_spans/doc_texts/doc_titles,
+    all None on this single-doc pinning path) via **_ so the stub matches ml_client.inference_query's
+    signature regardless of serve mode."""
+    def _iq(doc_ids, question, max_tokens=96, history=None, context="", **_):
         return {"answer": "pinned answer", "doc_ids": doc_ids,
                 "metrics": {"latency_ms": 8.0, "prompt_tokens": 10, "gen_tokens": 3}}
 
@@ -115,7 +116,7 @@ def test_compare_nonstream_pinned_doc_ids_no_reretrieve(client, auth, make_corpu
                         lambda *a, **k: pytest.fail("pinned compare must not re-retrieve"))
     seen = {}
 
-    def _iq(doc_ids, question, max_tokens=96, history=None):
+    def _iq(doc_ids, question, max_tokens=96, history=None, context="", **_):
         return {"answer": "cart", "doc_ids": doc_ids,
                 "metrics": {"latency_ms": 8.0, "ttft_ms": 3.0, "decode_tps": 40.0,
                             "prompt_tokens": 10, "gen_tokens": 3, "resident_kv_tokens": 5}}

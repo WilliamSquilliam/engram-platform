@@ -26,12 +26,17 @@ def _to_vllm(monkeypatch):
 
 @pytest.fixture()
 def capture_iq(monkeypatch):
-    """Capture the exact args the serve path hands to the vLLM /query (doc_ids + context)."""
+    """Capture the exact args the serve path hands to the vLLM /query (doc_ids + context + resident
+    span fields)."""
     seen: dict = {}
 
-    def _iq(doc_ids, question, max_tokens=96, history=None, context=""):
+    def _iq(doc_ids, question, max_tokens=96, history=None, context="",
+            doc_spans=None, doc_texts=None, doc_titles=None):
         seen["doc_ids"] = list(doc_ids)
         seen["context"] = context
+        seen["doc_spans"] = doc_spans
+        seen["doc_texts"] = doc_texts
+        seen["doc_titles"] = doc_titles
         return {"answer": "served answer", "doc_ids": doc_ids,
                 "metrics": {"latency_ms": 8.0, "prompt_tokens": 10, "gen_tokens": 3}}
 
@@ -91,6 +96,72 @@ def test_off_serves_all_doc_ids_no_context(client, auth, make_corpus, upload_doc
     assert capture_iq["doc_ids"] == ["top1", "doc2", "doc3"]   # all carts served
     assert capture_iq["context"] == ""                          # no routed context
     assert r.json()["used_docs"] == ["top1", "doc2", "doc3"]
+
+
+def test_resident_serves_all_docs_with_spans_no_context(client, auth, make_corpus, upload_doc,
+                                                        mock_ml, capture_iq, monkeypatch):
+    """QRC_MODE=resident + multi-doc -> serve ALL doc_ids (top full-cart + docs 2..k as KV spans) with
+    NO text context; the payload carries doc_spans/doc_texts/doc_titles for the spanned (non-top) docs,
+    and used_docs/sources still list ALL retrieved ids."""
+    headers, _ = auth
+    cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    _to_vllm(monkeypatch)
+    monkeypatch.setattr(config, "QRC_MODE", "resident")
+    monkeypatch.setattr(retrieval, "retrieve", lambda *a, **k: ["top1", "doc2", "doc3"])
+    routed = {}
+
+    def _spans(corpus_id, question, doc_ids):
+        routed["doc_ids"] = list(doc_ids)
+        return {"doc2": [[0, 20]], "doc3": [[5, 30]]}   # both non-top docs resolved to spans
+
+    monkeypatch.setattr(retrieval, "route_chunk_spans", _spans)
+    monkeypatch.setattr(retrieval, "served_texts_for",
+                        lambda cid_, ids: {d: f"text of {d}" for d in ids})
+    monkeypatch.setattr(retrieval, "doc_titles_for",
+                        lambda cid_, ids: {d: f"Title {d}" for d in ids})
+    monkeypatch.setattr(retrieval, "route_chunks_context",
+                        lambda *a, **k: pytest.fail("resident mode must not build text context"))
+    monkeypatch.setattr(retrieval, "doc_sources",
+                        lambda cid_, ids: [{"id": d, "title": d} for d in ids])
+
+    r = client.post(f"/corpora/{cid}/chat", json={"question": "what is alpha?"}, headers=headers)
+    assert r.status_code == 200, r.text
+    # Served: ALL doc_ids, NO context, spans for the non-top docs only.
+    assert capture_iq["doc_ids"] == ["top1", "doc2", "doc3"]
+    assert capture_iq["context"] == ""
+    assert routed["doc_ids"] == ["doc2", "doc3"]            # docs 2..k were span-routed
+    assert capture_iq["doc_spans"] == {"doc2": [[0, 20]], "doc3": [[5, 30]]}
+    assert capture_iq["doc_texts"] == {"doc2": "text of doc2", "doc3": "text of doc3"}
+    assert capture_iq["doc_titles"] == {"doc2": "Title doc2", "doc3": "Title doc3"}
+    # Reported: ALL retrieved ids.
+    assert r.json()["used_docs"] == ["top1", "doc2", "doc3"]
+
+
+def test_resident_drops_docs_with_no_resolved_spans(client, auth, make_corpus, upload_doc,
+                                                    mock_ml, capture_iq, monkeypatch):
+    """A non-top doc whose spans all resolve empty is absent from doc_spans -> the control plane sends
+    text/titles only for the docs that DID resolve (never re-tokenize or attribute a dropped doc)."""
+    headers, _ = auth
+    cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    _to_vllm(monkeypatch)
+    monkeypatch.setattr(config, "QRC_MODE", "resident")
+    monkeypatch.setattr(retrieval, "retrieve", lambda *a, **k: ["top1", "doc2", "doc3"])
+    # Only doc2 resolved to spans; doc3 dropped out of routing.
+    monkeypatch.setattr(retrieval, "route_chunk_spans", lambda *a, **k: {"doc2": [[0, 12]]})
+    monkeypatch.setattr(retrieval, "served_texts_for",
+                        lambda cid_, ids: {d: f"text of {d}" for d in ids})
+    monkeypatch.setattr(retrieval, "doc_titles_for",
+                        lambda cid_, ids: {d: f"Title {d}" for d in ids})
+    monkeypatch.setattr(retrieval, "doc_sources",
+                        lambda cid_, ids: [{"id": d, "title": d} for d in ids])
+
+    r = client.post(f"/corpora/{cid}/chat", json={"question": "what is alpha?"}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert capture_iq["doc_ids"] == ["top1", "doc2", "doc3"]   # all still served/reported
+    assert capture_iq["doc_spans"] == {"doc2": [[0, 12]]}
+    # texts/titles only for the doc that resolved — doc3 is neither re-tokenized nor attributed.
+    assert capture_iq["doc_texts"] == {"doc2": "text of doc2"}
+    assert capture_iq["doc_titles"] == {"doc2": "Title doc2"}
 
 
 def test_hybrid_single_doc_serves_as_cart_no_context(client, auth, make_corpus, upload_doc,
@@ -179,3 +250,33 @@ def test_stream_off_serves_all_no_context(client, auth, make_corpus, upload_doc,
     assert r.status_code == 200
     assert capture_stream["payload"]["doc_ids"] == ["top1", "doc2", "doc3"]
     assert capture_stream["payload"]["context"] == ""
+
+
+def test_stream_resident_serves_spans_no_context(client, auth, make_corpus, upload_doc,
+                                                 mock_ml, capture_stream, monkeypatch):
+    """chat/stream on QRC_MODE=resident: the /query_stream payload carries ALL doc_ids + doc_spans/
+    doc_texts/doc_titles for the spanned docs and an empty context; head/sources report ALL ids."""
+    headers, _ = auth
+    cid = _ready_corpus(client, headers, make_corpus, upload_doc)
+    _to_vllm(monkeypatch)
+    monkeypatch.setattr(config, "QRC_MODE", "resident")
+    monkeypatch.setattr(retrieval, "retrieve", lambda *a, **k: ["top1", "doc2", "doc3"])
+    monkeypatch.setattr(retrieval, "route_chunk_spans",
+                        lambda *a, **k: {"doc2": [[0, 20]], "doc3": [[5, 30]]})
+    monkeypatch.setattr(retrieval, "served_texts_for",
+                        lambda cid_, ids: {d: f"text of {d}" for d in ids})
+    monkeypatch.setattr(retrieval, "doc_titles_for",
+                        lambda cid_, ids: {d: f"Title {d}" for d in ids})
+    monkeypatch.setattr(retrieval, "doc_sources",
+                        lambda cid_, ids: [{"id": d, "title": d} for d in ids])
+
+    r = client.post(f"/corpora/{cid}/chat/stream", json={"question": "what is alpha?"}, headers=headers)
+    assert r.status_code == 200
+    p = capture_stream["payload"]
+    assert p["doc_ids"] == ["top1", "doc2", "doc3"]
+    assert p["context"] == ""
+    assert p["doc_spans"] == {"doc2": [[0, 20]], "doc3": [[5, 30]]}
+    assert p["doc_texts"] == {"doc2": "text of doc2", "doc3": "text of doc3"}
+    assert p["doc_titles"] == {"doc2": "Title doc2", "doc3": "Title doc3"}
+    head = json.loads(r.text.split("\n\n")[0].removeprefix("data: "))
+    assert head["used_docs"] == ["top1", "doc2", "doc3"]
