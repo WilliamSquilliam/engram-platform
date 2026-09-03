@@ -29,6 +29,13 @@ DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{(DATA_DIR / 'platform
 
 # The torch-bearing ML service (train + onboarding + HF inference).
 ML_SERVICE_URL = os.environ.get("ML_SERVICE_URL", "http://localhost:8001")
+# The corpus_dir sent to the ML plane is a BOX-SIDE path (the box confines it to its allowed data
+# roots and uses it for fused-index artifacts). It coincides with the control plane's own storage
+# path when both share the /data convention (Fargate + box) — but a local backend driving a REMOTE
+# GPU (e.g. Windows dev against the Lambda box) has no such shared path, and its local path fails
+# the box's confinement check outright. When set, ML_CORPUS_DIR_BASE maps every corpus to
+# <base>/<corpus_id> for ML-plane calls instead of the local storage path. Empty = local path.
+ML_CORPUS_DIR_BASE = os.environ.get("ML_CORPUS_DIR_BASE", "").rstrip("/")
 
 # Inference path for chat. "hf" (default) = the ml_service /query above (HF DynamicCache; retrieves
 # internally; the validated local path). "vllm" = the separate vLLM Inference Service
@@ -80,6 +87,24 @@ QRC_CHUNK_DESC = os.environ.get("QRC_CHUNK_DESC", "off").lower()
 # touching the shared core.
 from . import chunking as _chunking  # noqa: E402 — after os import; pure module, no app/torch imports
 QRC_BUDGET_TOKENS = int(os.environ.get("QRC_BUDGET_TOKENS", str(_chunking.CHUNK_BUDGET_TOKENS)))
+
+# --- Conversational retrieval upgrades (UPGRADE 1 + 2) ----------------------------------------
+# CHAT_CONDENSE (DEFAULT "on"): rewrite a follow-up question into a standalone query BEFORE retrieval
+# so pronouns/vague references ("what about its pricing?") route + retrieve against the topic they mean
+# instead of the raw text. Only fires when the turn has history (turn 1 is already standalone); costs
+# one extra small-engine generation per follow-up turn (~1-2s added). The rewrite is used only for
+# retrieval/routing — the question SERVED to the model stays the original (it already has the history).
+# See app/condense.py; any failed/narrated rewrite is a no-op (falls back to the original everywhere).
+CHAT_CONDENSE = os.environ.get("CHAT_CONDENSE", "on").lower()
+# CHAT_PIN_REFRESH (DEFAULT "on"): let a pinned conversation follow a TOPIC SHIFT. When a follow-up
+# echoes pinned doc_ids, also run a fresh retrieval on the (condensed) question; if the best fresh doc
+# isn't in the pinned set AT ALL, the topic moved and we serve the fresh docs (the client re-pins from
+# the head frame). Rank shuffles WITHIN the pinned set never unpin — only a top-1 that's a total
+# stranger overrides — so stable follow-ups keep the exact same evidence with no churn from rank
+# jitter. "off" = today's trust-the-pin behavior exactly (reuse the pinned ids verbatim, no refresh
+# retrieval). The refresh costs one in-process hybrid retrieval (~tens of ms warm — the cached-index
+# fix made this cheap, so the pin's original latency-saving rationale barely applies anymore).
+CHAT_PIN_REFRESH = os.environ.get("CHAT_PIN_REFRESH", "on").lower()
 
 # Control-plane retrieval backend: "hybrid" (the DEFAULT — industry-standard bm25s lexical + fastembed
 # dense fused by RRF, in-process, torch-free) or "fused" (the GPU-box BM25+dense+rerank pipeline).

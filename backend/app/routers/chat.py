@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from .. import config, limits, measurements, ml_client, retrieval, usage
+from .. import condense, config, limits, measurements, ml_client, retrieval, usage
 from ..deps import get_current_user, get_db
 from ..models import Corpus, Tenant, User
 from ..ratelimit import limiter
@@ -68,6 +68,44 @@ def _hybrid_split(corpus_id: str, question: str, doc_ids: list[str]) -> dict:
     return base
 
 
+def _effective_question(req: ChatReq) -> tuple[str, str | None]:
+    """(effective_q, condensed_q) for this turn (UPGRADE 1). When CHAT_CONDENSE is on and the turn has
+    history, rewrite the pronoun-laden follow-up into a standalone query used for retrieval + routing;
+    the SERVED question stays req.question (the model already has the history). condensed_q is the
+    rewrite when one was used (for debug visibility), else None. A no-op rewrite -> (req.question, None)."""
+    if config.CHAT_CONDENSE == "on" and req.history:
+        rewritten = condense.standalone_question([m.model_dump() for m in req.history], req.question)
+        if rewritten:
+            return rewritten, rewritten
+    return req.question, None
+
+
+def _resolve_doc_ids(corpus: Corpus, req: ChatReq, effective_q: str) -> list[str]:
+    """The doc_ids to serve this turn, applying session pinning + topic-shift pin refresh (UPGRADE 2).
+
+    No pinned ids (turn 1) -> retrieve on effective_q as today.
+    Pinned ids -> validate membership (unknown -> KeyError, mapped to 400 by callers). Then, when
+    CHAT_PIN_REFRESH is on, run a FRESH retrieval on effective_q: if the best fresh doc isn't in the
+    pinned set at all, the topic moved — serve the fresh docs (the client re-pins from the head frame).
+    Rank shuffles within the pinned set never unpin (only a top-1 that's a total stranger overrides),
+    so a stable follow-up keeps the exact pinned evidence with no churn from rank jitter. The refresh
+    is one in-process hybrid retrieval (~tens of ms warm — the cached-index fix made it cheap, so the
+    pin's original latency-saving rationale barely applies). CHAT_PIN_REFRESH=off = trust-the-pin."""
+    if not req.doc_ids:
+        doc_ids = retrieval.retrieve(corpus.id, effective_q, req.k)
+        if not doc_ids:
+            raise HTTPException(404, "no documents to retrieve for this document base")
+        return doc_ids
+    pinned = list(req.doc_ids)
+    retrieval.validate_doc_ids(corpus.id, pinned)  # KeyError on unknown ids -> caller maps to 400
+    if config.CHAT_PIN_REFRESH == "on":
+        fresh = retrieval.retrieve(corpus.id, effective_q, req.k)
+        # Topic shift only when the BEST fresh doc is a stranger to the pinned set — then follow it.
+        if fresh and fresh[0] not in set(pinned):
+            return fresh
+    return pinned
+
+
 def _answer(corpus: Corpus, req: ChatReq, db: Session) -> ChatResp:
     if corpus.status != "ready":
         raise HTTPException(400, f"Document base not ready (status={corpus.status})")
@@ -76,24 +114,19 @@ def _answer(corpus: Corpus, req: ChatReq, db: Session) -> ChatResp:
         # Resident-KV serving: control plane retrieves the cart doc_ids, the Inference Service serves
         # them (no per-query document prefill). Retrieval lives here (C2 split), not on the GPU.
         # Conversation history rides as small per-turn prefill on top of the resident corpus KV.
-        if req.doc_ids:
-            # Session-pinned carts: a follow-up turn echoes the doc_ids the first turn resolved,
-            # so we skip the 221.7ms/query retrieval and reuse them verbatim. The ids are
-            # client-supplied — validate membership against the corpus (KeyError -> 400) without
-            # reading any doc text (the vLLM serve path takes doc_ids, never raw context).
-            doc_ids = list(req.doc_ids)
-            try:
-                retrieval.validate_doc_ids(corpus.id, doc_ids)
-            except KeyError as e:
-                raise HTTPException(400, str(e)) from e
-        else:
-            doc_ids = retrieval.retrieve(corpus.id, req.question, req.k)
-            if not doc_ids:
-                raise HTTPException(404, "no documents to retrieve for this document base")
+        # UPGRADE 1: a follow-up's pronoun-laden text is condensed to a standalone query ONCE, used for
+        # retrieval + routing (_resolve_doc_ids / _hybrid_split); the SERVED question stays req.question.
+        effective_q, condensed_q = _effective_question(req)
+        try:
+            # Session pinning + topic-shift refresh (UPGRADE 2). Unknown pinned ids -> 400.
+            doc_ids = _resolve_doc_ids(corpus, req, effective_q)
+        except KeyError as e:
+            raise HTTPException(400, str(e)) from e
         # QRC serve split: hybrid = top-1 cart + routed chunks as text `context`; resident = top-1 cart
         # + docs 2..k as loaded KV spans (doc_spans/doc_texts/doc_titles); off = full doc_ids, no context.
+        # Routed against effective_q (the condensed query) so chunk routing matches the resolved topic;
         # used_docs/sources still report ALL doc_ids below.
-        split = _hybrid_split(corpus.id, req.question, doc_ids)
+        split = _hybrid_split(corpus.id, effective_q, doc_ids)
         # Per-request answer budget, CLAMPED to the server ceiling (a client can ask for less,
         # never more — the ceiling is the GPU-time guardrail, EOS is the normal stop).
         max_tokens = min(req.max_tokens or config.INFERENCE_MAX_TOKENS, config.INFERENCE_MAX_TOKENS)
@@ -109,7 +142,8 @@ def _answer(corpus: Corpus, req: ChatReq, db: Session) -> ChatResp:
             metrics = {**metrics, "tier": "cartridge"}
         measurements.record(metrics, None, tenant_id=corpus.tenant_id)
         return ChatResp(answer=result["answer"], used_docs=doc_ids,
-                        sources=retrieval.doc_sources(corpus.id, doc_ids))
+                        sources=retrieval.doc_sources(corpus.id, doc_ids),
+                        condensed_q=condensed_q)
     # default: the HF ml_service (retrieves + generates internally). req.doc_ids is ignored on this
     # path: the hf ml_service does its OWN retrieval end-to-end and takes no doc_ids, so there is no
     # seam to pin here — it returns its own used_docs, which the client echoes.
@@ -178,26 +212,27 @@ def chat_stream(
     _enforce_query_limit(db, corpus)
     history = [m.model_dump() for m in req.history]
 
-    # Resolve doc_ids ONCE. A follow-up turn echoes the first turn's doc_ids so retrieval is skipped
-    # and the same evidence is reused; a first turn retrieves. Client-supplied ids are validated
-    # against the corpus (unknown ids -> 400) before any GPU work.
-    if req.doc_ids:
-        doc_ids = list(req.doc_ids)
-        try:
-            retrieval.validate_doc_ids(corpus.id, doc_ids)
-        except KeyError as e:
-            raise HTTPException(400, str(e)) from e
-    else:
-        doc_ids = retrieval.retrieve(corpus.id, req.question, req.k)
-        if not doc_ids:
-            raise HTTPException(404, "no documents to retrieve for this document base")
+    # UPGRADE 1: condense a follow-up's pronoun-laden text into a standalone query ONCE, before
+    # retrieval. effective_q drives retrieval + routing (_resolve_doc_ids / _hybrid_split); the
+    # SERVED question stays req.question (the model already has the history as prefill). condensed_q is
+    # the rewrite when one was used (surfaced on the head frame for debug), else None.
+    effective_q, condensed_q = _effective_question(req)
+
+    # Resolve doc_ids ONCE. Turn 1 retrieves on effective_q; a follow-up echoes pinned doc_ids, which
+    # are validated (unknown -> 400) and — with CHAT_PIN_REFRESH on — refreshed on a topic shift
+    # (UPGRADE 2). Client-supplied ids are validated against the corpus before any GPU work.
+    try:
+        doc_ids = _resolve_doc_ids(corpus, req, effective_q)
+    except KeyError as e:
+        raise HTTPException(400, str(e)) from e
     sources = retrieval.doc_sources(corpus.id, doc_ids)
 
     # QRC serve split: hybrid = top-1 cart + routed chunks as text `context`; resident = top-1 cart +
-    # docs 2..k as loaded KV spans (doc_spans/doc_texts/doc_titles); off = full doc_ids, no context. The
-    # head frame + sources below still report ALL doc_ids — the evidence the user sees is unchanged;
-    # only the serve payload's ids/context/spans differ.
-    split = _hybrid_split(corpus.id, req.question, doc_ids)
+    # docs 2..k as loaded KV spans (doc_spans/doc_texts/doc_titles); off = full doc_ids, no context.
+    # Routed against effective_q so chunk routing matches the resolved topic. The head frame + sources
+    # below still report ALL doc_ids — the evidence the user sees is unchanged; only the serve payload's
+    # ids/context/spans differ.
+    split = _hybrid_split(corpus.id, effective_q, doc_ids)
 
     _theta = config.ADAPTIVE_THETA
     theta = float(_theta) if _theta not in (None, "") else None
@@ -213,9 +248,10 @@ def chat_stream(
 
     async def gen():
         # head carries used_docs so the UI can PIN them on follow-up turns (skip re-retrieval) and
-        # render the source list immediately, before the first token lands.
+        # render the source list immediately, before the first token lands. condensed_q surfaces the
+        # rewritten query (UPGRADE 1) for debug visibility — never the transcript, just the query.
         yield ("data: " + json.dumps({"head": True, "used_docs": doc_ids,
-                                      "sources": sources}) + "\n\n")
+                                      "sources": sources, "condensed_q": condensed_q}) + "\n\n")
         metrics_final = None
         tier = "cartridge"
         escalated = False

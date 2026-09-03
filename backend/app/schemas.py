@@ -438,6 +438,10 @@ class ChatResp(BaseModel):
     answer: str
     used_docs: list[str]
     sources: list[SourceRef] = []
+    # The standalone query a follow-up turn was rewritten to before retrieval (UPGRADE 1), for debug
+    # visibility. None when no rewrite was used (turn 1, condensation off, or the rewrite was a no-op).
+    # Never the transcript — just the rewritten query.
+    condensed_q: str | None = None
 
 
 # --- source connectors (Google Drive / SharePoint) --------------------------------------------

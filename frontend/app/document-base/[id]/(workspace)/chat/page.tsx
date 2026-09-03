@@ -105,7 +105,6 @@ export default function ChatPage() {
       );
       setBusy(true);
 
-      let firstHead = true;
       const patchLast = (fn: (m: ChatMessage) => ChatMessage) =>
         update(convoId!, (c) => {
           const msgs = [...c.messages];
@@ -121,11 +120,13 @@ export default function ChatPage() {
             const sources = e.sources || [];
             const used = e.used_docs || [];
             patchLast((m) => ({ ...m, sources, usedDocs: used }));
-            // Pin the conversation to the first answered turn's retrieval.
-            if (firstHead && !pinnedDocs?.length && used.length) {
+            // Re-pin the conversation to THIS turn's retrieval on every head frame, not just the first
+            // unpinned turn. The server refreshes the pin on a topic shift (UPGRADE 2) and reports the
+            // new used_docs here — updating pinnedDocs each turn propagates that shift to the next turn
+            // (a stale pin would keep re-sending the old docs and undo the server-side refresh).
+            if (used.length) {
               update(convoId!, (c) => ({ ...c, pinnedDocs: used }));
             }
-            firstHead = false;
           } else if (e.delta) {
             patchLast((m) => ({ ...m, content: m.content + e.delta }));
           } else if (e.escalate) {

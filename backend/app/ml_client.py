@@ -1,12 +1,15 @@
 """Thin HTTP client to the ML service (train + query). Keeps torch out of the
 control-plane process. On AWS this same call goes to the Inference Service /
 Training Worker behind an internal ALB; only ML_SERVICE_URL changes."""
+import logging
 import os
 
 import httpx
 
 from . import config
 from .config import INFERENCE_SERVICE_URL, ML_SERVICE_URL
+
+logger = logging.getLogger(__name__)
 
 # Training can run for many hours at paper scale; make the client timeout
 # configurable (seconds) rather than capping at 1 hour. Pair with TRAIN_JOB_TIMEOUT
@@ -71,6 +74,10 @@ def onboard_cag(
         payload["progress_token"] = progress_token
     resp = httpx.post(f"{ML_SERVICE_URL}/onboard_cag", json=payload, timeout=TRAIN_TIMEOUT,
                       headers=_ml_headers())
+    if resp.status_code >= 400:
+        # Surface the ML-plane's error DETAIL in our logs — raise_for_status alone buries the
+        # body, which turns a simple 4xx into blind bisection (lived it, 2026-09-03).
+        logger.error("onboard_cag failed: HTTP %s %s", resp.status_code, resp.text[:300])
     resp.raise_for_status()
     return resp.json()
 

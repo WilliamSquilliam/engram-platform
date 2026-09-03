@@ -145,11 +145,15 @@ def _run_training(corpus_id: str, job_id: str) -> None:
             if not docs:
                 raise RuntimeError("no readable text documents in document base")
             progress_url = f"{config.BACKEND_INTERNAL_URL}/internal/jobs/{job_id}/progress"
+            # The ML-plane corpus_dir: box-side mapping when configured (local backend driving a
+            # remote GPU), else the shared-/data local path — see config.ML_CORPUS_DIR_BASE.
+            ml_corpus_dir = (f"{config.ML_CORPUS_DIR_BASE}/{corpus_id}"
+                             if config.ML_CORPUS_DIR_BASE else str(storage.corpus_dir(corpus_id)))
             if config.INFERENCE_BACKEND == "vllm":
                 # Resident-KV serving: onboard = build a CAG cart per doc (one forward pass, no
                 # training) into the cartridge store the vLLM Inference Service serves from.
                 result = ml_client.onboard_cag(
-                    str(storage.corpus_dir(corpus_id)), docs,
+                    ml_corpus_dir, docs,
                     build_index=config.RETRIEVAL_BACKEND == "fused",
                     job_id=job_id, progress_url=progress_url,
                     progress_token=config.INTERNAL_API_TOKEN or None,

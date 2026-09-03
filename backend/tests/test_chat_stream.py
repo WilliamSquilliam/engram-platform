@@ -19,6 +19,9 @@ def _ready_corpus(client, headers, make_corpus, upload_doc) -> str:
 
 def _to_vllm(monkeypatch):
     monkeypatch.setattr(config, "INFERENCE_BACKEND", "vllm")
+    # Trust-the-pin for these tests (reuse pinned ids verbatim, no refresh retrieval); the topic-shift
+    # REFRESH default (on) is covered in test_chat_pin_refresh.py.
+    monkeypatch.setattr(config, "CHAT_PIN_REFRESH", "off")
 
 
 @pytest.fixture()

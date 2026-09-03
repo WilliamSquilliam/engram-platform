@@ -15,8 +15,13 @@ def _ready_corpus(client, headers, make_corpus, upload_doc) -> str:
 
 def _to_vllm(monkeypatch):
     """Flip the request-time backend to the production serve path. Must run AFTER _ready_corpus:
-    onboarding itself runs on the mocked hf path (mock_ml), not vllm."""
+    onboarding itself runs on the mocked hf path (mock_ml), not vllm.
+
+    Also pins CHAT_PIN_REFRESH=off so these tests exercise the trust-the-pin contract they were
+    written for (reuse the pinned ids verbatim, skip the refresh retrieval). The topic-shift REFRESH
+    default (on) is covered separately in test_chat_pin_refresh.py."""
     monkeypatch.setattr(config, "INFERENCE_BACKEND", "vllm")
+    monkeypatch.setattr(config, "CHAT_PIN_REFRESH", "off")
 
 
 @pytest.fixture()
