@@ -42,9 +42,30 @@ except Exception:
 d.pop("id", None); d.pop("ip", None)
 json.dump(d, open(sys.argv[1], "w"), indent=2)' "$STATE_FILE" 2>/dev/null || rm -f "$STATE_FILE"
 
+# DELETE the two gpu A records (launch.sh recreates them on the next box). Leaving them
+# bound to a RELEASED IP is dangling DNS: the provider recycles IPs, and whoever inherits
+# ours could pass an HTTP-01 ACME challenge for our hostname (DNS still points at them),
+# mint a valid cert, and harvest the ML bearer token from control-plane requests. Deleting
+# closes that window; the control plane's GPU-offline handling already degrades cleanly
+# when the names don't resolve. Best-effort: no CLOUDFLARE_* creds -> print the manual step.
+if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ZONE_ID:-}" ]; then
+  cf_base="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
+  for host in "${HOST_SERVE:-gpu.engramdynamics.org}" "${HOST_ONBOARD:-gpu-onboard.engramdynamics.org}"; do
+    rid="$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$cf_base?type=A&name=$host" \
+      | python3 -c 'import json,sys; r=json.load(sys.stdin).get("result") or []; print(r[0]["id"] if r else "")')"
+    if [ -n "$rid" ]; then
+      curl -s -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$cf_base/$rid" >/dev/null \
+        && log "deleted A record $host (dangling-DNS guard; launch.sh recreates it)" \
+        || log "WARN: could not delete A record $host — remove it manually"
+    fi
+  done
+else
+  log "WARN: no CLOUDFLARE_* creds — DELETE the gpu/gpu-onboard A records manually (dangling-DNS risk)"
+fi
+
 echo
 log "==================== TERMINATED ===================="
 log "Local SSD (HF live cache / cart mirror / registry) is GONE — the loss-tolerant tier."
 log "Persistent FS '$FS_NAME' KEPT the seeded weights; S3 cart store KEPT your memory."
 log "Compute is now \$0. Relaunch:  bash $LIB_DIR/launch.sh  &&  bash $LIB_DIR/provision.sh  (minutes)."
-log "If DNS was auto-set, the two A records now point at a dead IP — re-run launch.sh to refresh them."
+log "DNS: the gpu A records were deleted above (or flagged for manual removal) — launch.sh re-adds them."

@@ -302,6 +302,14 @@ def gpu_stop(_: User = Depends(require_platform_admin)) -> GpuStopResp:
     region = inst.get("region")
     region_name = region.get("name") if isinstance(region, dict) else region
     lambda_cloud.terminate_instances([inst["id"]])
+    # Dangling-DNS guard: delete the gpu A records now that their IP is being released (an
+    # inherited IP + still-pointing DNS lets a stranger mint a valid cert for our hostname
+    # via HTTP-01 and harvest the ML bearer token). Best-effort — the next start's DNS
+    # reconcile recreates them; a delete failure never fails the stop.
+    for url in (config.INFERENCE_SERVICE_URL, config.ML_SERVICE_URL):
+        host = urlparse(url).hostname
+        if _is_dns_host(host):
+            cloudflare_dns.delete_a_record(host)
     logger.info(
         "Terminating GPU serving box %s: type=%s region=%s", inst["id"], itype, region_name
     )
