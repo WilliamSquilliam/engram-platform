@@ -891,6 +891,11 @@ function ConnectorFolderPicker({
     loadLevel();
   }, [open, connectionId, loadLevel]);
 
+  // Render nothing while closed so the dialog isn't in the DOM/a11y tree — a CSS-hidden <dialog>
+  // leaves a phantom "Choose a folder in" dialog in every setup-page a11y snapshot. When open we
+  // mount it and showModal() fires from the sync effect below (the ref is live on that render).
+  if (!open) return null;
+
   // Drill into a folder: push it on the stack and load its children.
   function drillInto(folder: BrowseFolder) {
     setStack((s) => [...s, folder]);

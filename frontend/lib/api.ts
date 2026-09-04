@@ -341,8 +341,9 @@ export const api = {
       body: JSON.stringify({ question, k, history, ...(docIds?.length ? { doc_ids: docIds } : {}) }),
     }),
   // Token-streaming chat (SSE over fetch — EventSource can't POST/attach the JWT). Emits parsed
-  // events: {head, used_docs, sources} -> {delta} xN -> {done, metrics}; {error} in-band on GPU
-  // failure. `history` rides prior turns; `docIds` pins the first turn's retrieval on follow-ups.
+  // events: {head, used_docs, sources} -> {thinking} xN (reasoning-tuned models only, before the
+  // answer) -> {delta} xN -> {done, metrics}; {error} in-band on GPU failure. `history` rides prior
+  // turns; `docIds` pins the first turn's retrieval on follow-ups.
   // Returns an AbortController so the UI can Stop mid-stream.
   chatStream: (
     id: string, question: string,

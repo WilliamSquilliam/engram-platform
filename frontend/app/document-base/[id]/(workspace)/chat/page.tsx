@@ -127,6 +127,11 @@ export default function ChatPage() {
             if (used.length) {
               update(convoId!, (c) => ({ ...c, pinnedDocs: used }));
             }
+          } else if (e.thinking) {
+            // Reasoning frames arrive before the answer deltas. Accumulate them into the turn's
+            // `thinking` field so the aside can render them and show activity while only thinking
+            // has streamed (this doubles as the slow-first-token affordance).
+            patchLast((m) => ({ ...m, thinking: (m.thinking || "") + e.thinking }));
           } else if (e.delta) {
             patchLast((m) => ({ ...m, content: m.content + e.delta }));
           } else if (e.escalate) {
@@ -352,11 +357,16 @@ function Message({ m, onCopy, copied }: { m: ChatMessage; onCopy: () => void; co
           </span>
         )}
       </div>
+      {/* Reasoning aside: shows above the answer. While only thinking has streamed (no answer delta
+          yet) it's expanded with a shimmering "Thinking…" label so the turn visibly works; once the
+          first delta lands it auto-collapses to a "Thought for a moment ▸" toggle. */}
+      {m.thinking && <ThinkingAside thinking={m.thinking} answered={!!m.content} />}
+
       {m.content ? (
         <div className={cn(m.error && "text-slate-400")}>
           <Markdown text={m.content} className={m.streaming ? "stream-caret" : undefined} />
         </div>
-      ) : (
+      ) : m.thinking ? null : (
         <div className="flex gap-1 py-1" aria-label="Thinking">
           <Dot /> <Dot delay="0.15s" /> <Dot delay="0.3s" />
         </div>
@@ -384,6 +394,43 @@ function Message({ m, onCopy, copied }: { m: ChatMessage; onCopy: () => void; co
           <button onClick={onCopy} className="text-xs text-slate-500 hover:text-slate-300" data-testid="chat-copy">
             {copied ? "Copied" : "Copy"}
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Collapsible reasoning aside rendered above the answer. `answered` is true once the first answer
+// delta has landed. Before then it's forced open with a shimmering "Thinking…" label (activity +
+// slow-first-token affordance); after, it collapses to a small toggle the user can re-expand to read
+// the muted thinking text. Local open state so a user who expands it after the answer stays expanded.
+function ThinkingAside({ thinking, answered }: { thinking: string; answered: boolean }) {
+  const [open, setOpen] = useState(false);
+  // While still thinking, force it open; once answered, honor the user's toggle (default collapsed).
+  const expanded = answered ? open : true;
+  return (
+    <div className="mb-2" data-testid="chat-thinking">
+      <button
+        type="button"
+        onClick={() => answered && setOpen((o) => !o)}
+        disabled={!answered}
+        className={cn(
+          "flex items-center gap-1.5 text-xs text-slate-500",
+          answered ? "hover:text-slate-300" : "cursor-default"
+        )}
+      >
+        {answered ? (
+          <>
+            <span className={cn("transition-transform", expanded && "rotate-90")}>▸</span>
+            <span>Thought for a moment</span>
+          </>
+        ) : (
+          <span className="animate-pulse">Thinking…</span>
+        )}
+      </button>
+      {expanded && (
+        <div className="mt-1 whitespace-pre-wrap border-l border-slate-800 pl-3 text-xs text-slate-500">
+          {thinking}
         </div>
       )}
     </div>

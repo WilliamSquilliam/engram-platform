@@ -14,6 +14,10 @@ export interface ChatMessage {
   usedDocs?: string[];
   // The routing tier the answer came from (cartridge | rag-backup), for a small badge.
   tier?: string;
+  // Reasoning text the model streamed on the {thinking} channel BEFORE its answer deltas. Shown as a
+  // collapsible aside above the answer; NEVER sent back as history content and never copied. Persisting
+  // it here (the store already persists messages) is fine — it just must not enter request history.
+  thinking?: string;
   // True while this assistant turn is still streaming.
   streaming?: boolean;
   // True if this turn errored (rendered muted).

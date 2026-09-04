@@ -120,6 +120,20 @@ SERVE_SPEC_LOOKUP_MAX = int(os.environ.get("SERVE_SPEC_LOOKUP_MAX", "4"))
 # passes on that tier; until then eager stays the safe default everywhere.
 VLLM_ENFORCE_EAGER = os.environ.get("VLLM_ENFORCE_EAGER", "1") != "0"
 
+# SERVE_REASONING: "off" (DEFAULT — template renders a pre-closed thinking block) | "channel".
+# Command A+ is reasoning-tuned: with the channel suppressed it deliberates INSIDE the visible
+# answer ("The user asks... So answer: ... Must mention the document title.") — sometimes ALL of
+# the budget, truncating before any answer (found live in the UAT chat, 2026-09-03, immune to
+# every prompt-side instruction tried). "channel" lets the model think where it was trained to:
+# the stream splits on <|END_THINKING|> into {'thinking': ...} frames (UI renders a collapsible
+# aside) and clean {'delta': ...} answer frames; non-stream strips the thinking span entirely.
+# SERVE_THINK_EXTRA: extra generation budget for the thinking span so thinking never starves the
+# answer's own max_tokens (total cap = max_tokens + extra; the answer still ends at EOS).
+SERVE_REASONING = os.environ.get("SERVE_REASONING", "off").lower()
+SERVE_REASONING_CHANNEL = SERVE_REASONING == "channel"
+SERVE_THINK_EXTRA = int(os.environ.get("SERVE_THINK_EXTRA", "512"))
+_THINK_END = "<|END_THINKING|>"
+
 # ----- engine-side onboarding knobs (POST /onboard_cag; app.py proxies to it when ONBOARD_VIA_ENGINE
 # is set). This path builds one CAG cart per doc by harvesting the doc's prompt KV FROM the running
 # vLLM engine (the connector stages per-TP-rank shards keyed by cart_id), then merges + persists —
@@ -373,13 +387,16 @@ def _chat_ids(tok, user_text: str, history: list | None = None) -> list[int]:
     # <|START_THINKING|><|END_THINKING|> block so generation goes straight to the answer.
     # Pass BOTH knobs (each family reads its own, ignores the other); fall back for
     # templates that reject unexpected kwargs outright.
+    # SERVE_REASONING=channel keeps the thinking block OPEN (the model's trained mode; the serve
+    # layer separates thinking from answer downstream); "off" renders it pre-closed as before.
+    _r = SERVE_REASONING_CHANNEL
     try:
         out = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
-                                      reasoning=False, enable_thinking=False)
+                                      reasoning=_r, enable_thinking=_r)
     except TypeError:  # template that rejects unknown kwargs
         try:
             out = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
-                                          enable_thinking=False)
+                                          enable_thinking=_r)
         except TypeError:
             out = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True)
     # transformers 4.x returns list[int]; 5.x returns a BatchEncoding (and some paths nest
@@ -462,6 +479,11 @@ def _sampling(cart_ids, **kw):
     if cart_ids and _SP_HAS_EXTRA_ARGS:
         embedded = cart_ids if isinstance(cart_ids[0], dict) else [str(c) for c in cart_ids]
         kw["extra_args"] = {"cartridge_cart_ids": embedded}
+    # Channel mode: the thinking span consumes tokens BEFORE the answer starts — give it its own
+    # allowance so the caller's max_tokens still bounds the ANSWER (approximately; EOS is the
+    # normal stop either way). Applied here so every serve path (cart, rag, stream) agrees.
+    if SERVE_REASONING_CHANNEL and "max_tokens" in kw and kw["max_tokens"]:
+        kw["max_tokens"] = kw["max_tokens"] + SERVE_THINK_EXTRA
     return SamplingParams(temperature=0.0, **kw)
 
 
@@ -482,8 +504,11 @@ def _strip_markers(text: str) -> str:
 
 
 def _strip_think(text: str) -> str:
-    """Defensively drop a leading <think>...</think> block (Qwen3 emits one if the template's
-    thinking switch is ignored), then any family text-fencing markers."""
+    """Drop the thinking span from a decoded answer: the Cohere channel form (everything before
+    <|END_THINKING|> — the whole span when SERVE_REASONING=channel) and the Qwen3 <think> block
+    (emitted if a template's thinking switch is ignored), then any family text-fencing markers."""
+    if _THINK_END in text:
+        text = text.split(_THINK_END, 1)[1]
     if "<think>" in text and "</think>" in text:
         text = text.split("</think>", 1)[1]
     return _strip_markers(text).strip()
@@ -867,6 +892,14 @@ def _aget() -> dict:
     spec = _spec_config()
     if spec is not None:
         kw["speculative_config"] = spec
+    # Optional executor-backend override (VLLM_EXECUTOR_BACKEND=ray|mp|uni). Escape hatch for
+    # the TP>1 multiproc executor: on the 2026-09-03 fresh 2x H100 box the default mp executor
+    # was unstartable BOTH ways — fork workers died on "cannot re-initialize CUDA in forked
+    # subprocess" (something in the resolved dep stack now inits CUDA in the EngineCore parent)
+    # and spawn workers died unpickling the executor's shared_worker_lock (SemLock ->
+    # FileNotFoundError). ray sidesteps that machinery entirely. Unset = vLLM's default.
+    if os.environ.get("VLLM_EXECUTOR_BACKEND"):
+        kw["distributed_executor_backend"] = os.environ["VLLM_EXECUTOR_BACKEND"].lower()
     engine = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(
         model=MODEL, dtype=TORCH_DTYPE, gpu_memory_utilization=GPU_MEM_UTIL,
         tensor_parallel_size=TENSOR_PARALLEL, max_model_len=MAX_MODEL_LEN,
@@ -1013,7 +1046,8 @@ async def _stream_generate(prompt_ids: list[int], cart_ids: list[str] | None, ma
         reg.set(rid, list(cart_ids))
     t0 = time.perf_counter()
     first = None
-    sent = 0
+    sent = 0          # chars of ANSWER text already emitted
+    sent_think = 0    # chars of THINKING text already emitted (channel mode only)
     final = None
     try:
         async for out in st["engine"].generate(
@@ -1021,10 +1055,37 @@ async def _stream_generate(prompt_ids: list[int], cart_ids: list[str] | None, ma
                 _sampling(cart_ids, max_tokens=max_tokens,
                           logprobs=1 if want_conf else None), rid):
             final = out
-            # Strip family text-fencing markers from the CUMULATIVE text before diffing, and hold
-            # back any trailing partial marker until the next tick resolves it — otherwise the
-            # leading "<|START_TEXT|>" (or a split fragment of it) leaks into the first delta.
-            text = _strip_markers(out.outputs[0].text)
+            raw = out.outputs[0].text
+            # REASONING CHANNEL (SERVE_REASONING=channel): the template ends the generation
+            # prompt with <|START_THINKING|>, so the stream is `thinking <|END_THINKING|>
+            # <|START_RESPONSE|> answer`. Split on the END marker: the thinking region streams
+            # as {'thinking': ...} frames (the UI renders them as a collapsible aside), the
+            # answer region as normal {'delta': ...} frames — TTFT stays the first ANSWER
+            # token, the honest user-visible number. Suppressing the channel instead
+            # (reasoning=False) pushed the CoT INTO the visible answer — sometimes ALL of it,
+            # truncating before any answer appeared (found live in the UAT chat, 2026-09-03).
+            think_raw, answer_raw = raw, None
+            if _THINK_END in raw:
+                think_raw, answer_raw = raw.split(_THINK_END, 1)
+            elif not SERVE_REASONING_CHANNEL:
+                think_raw, answer_raw = "", raw
+            if answer_raw is None:
+                # Still thinking: stream the safe region of the thinking text.
+                ttext = _strip_markers(think_raw)
+                temit = _stream_safe_len(ttext)
+                if temit > sent_think:
+                    yield f"data: {_json.dumps({'thinking': ttext[sent_think:temit]})}\n\n"
+                    sent_think = temit
+                continue
+            # Flush any thinking tail the marker split just finalized.
+            ttext = _strip_markers(think_raw)
+            if len(ttext) > sent_think:
+                yield f"data: {_json.dumps({'thinking': ttext[sent_think:]})}\n\n"
+                sent_think = len(ttext)
+            # Strip family text-fencing markers from the CUMULATIVE answer before diffing, and
+            # hold back any trailing partial marker until the next tick resolves it — otherwise
+            # the leading "<|START_RESPONSE|>" (or a split fragment) leaks into the first delta.
+            text = _strip_markers(answer_raw)
             emit_to = _stream_safe_len(text)
             if emit_to > sent:
                 if first is None:

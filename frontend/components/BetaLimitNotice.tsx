@@ -38,6 +38,10 @@ export function BetaLimitNotice() {
     if (!open && d.open) d.close();
   }, [open]);
 
+  // Render nothing while closed so the dialog isn't in the DOM/a11y tree — a CSS-hidden <dialog> was
+  // still announced by screen readers as a phantom "You have reached a beta limit" on every page.
+  if (!open) return null;
+
   return (
     <dialog
       ref={ref}

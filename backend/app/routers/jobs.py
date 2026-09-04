@@ -3,6 +3,7 @@ service; on AWS this becomes an SQS message + Temporal workflow (C2/C3) — the 
 contract (POST train, GET status) is identical, so the frontend doesn't change."""
 import logging
 import secrets
+import threading
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -271,6 +272,42 @@ def _run_training(corpus_id: str, job_id: str) -> None:
         db.commit()
     finally:
         db.close()
+    # FIRST-QUERY WARMUP (best-effort, AFTER the ready-commit so it never delays the wizard):
+    # a cold corpus's first chat paid ~15-25s live (UAT, 2026-09-03) for costs that belong to
+    # onboarding — the retrieval index build (bm25 + doc embeddings + the fastembed ONNX load),
+    # the per-doc chunk-vector embeds, and the serving box hydrating this tenant's carts from S3.
+    # Pre-pay all three in a daemon thread; any failure only means the first user pays the old
+    # cold cost. Runs only for a corpus that actually came out ready.
+    try:
+        _sdb = SessionLocal()
+        try:
+            _ready = (_sdb.get(Corpus, corpus_id) or Corpus(status="")).status == "ready"
+        finally:
+            _sdb.close()
+        if _ready and config.INFERENCE_BACKEND == "vllm":
+            threading.Thread(target=_warm_first_query, args=(corpus_id,), daemon=True,
+                             name=f"warmup-{corpus_id[:8]}").start()
+    except Exception:  # noqa: BLE001 — warmup is a pure optimization
+        logger.warning("first-query warmup could not start for corpus %s", corpus_id, exc_info=True)
+
+
+def _warm_first_query(corpus_id: str) -> None:
+    """Pre-pay the cold-start costs the first chat would otherwise eat (see the caller). Each step
+    is independently best-effort; ~5-15s total in the background."""
+    from .. import retrieval
+    try:
+        # 1. Builds the corpus retrieval index (bm25 + doc vectors) AND loads fastembed once.
+        doc_ids = retrieval.retrieve(corpus_id, "warmup", config.INFERENCE_TOPK)
+        # 2. Primes every routed doc's chunk-vector cache (the embed-once-per-doc store).
+        if len(doc_ids) > 1:
+            retrieval.route_chunks_context(corpus_id, "warmup", doc_ids[1:])
+        # 3. One tiny generation hydrates this tenant's cart(s) into the serving box's hot cache.
+        if doc_ids:
+            ml_client.inference_query(doc_ids[:1], "Reply with exactly one word: ready.",
+                                      max_tokens=4)
+        logger.info("first-query warmup done for corpus %s", corpus_id)
+    except Exception:  # noqa: BLE001 — the first user just pays the old cold cost
+        logger.warning("first-query warmup failed for corpus %s", corpus_id, exc_info=True)
 
 
 def dispatch_training(db: Session, background: BackgroundTasks, corpus: Corpus) -> Job:

@@ -24,6 +24,11 @@ export default function NewCorpusPage() {
     setErr("");
     try {
       const c = await api.createCorpus(name.trim());
+      // The name is already captured here, so advance the onboarding cursor to "documents" the same
+      // way the setup wizard's saveName() does — otherwise the fresh corpus's cursor is still "name"
+      // and setup opens on the Name step again (pre-filled), showing it twice. Best-effort: if the
+      // patch fails the wizard still resumes correctly from the persisted cursor.
+      await api.patchOnboarding(c.id, { onboarding_step: "documents" }).catch(() => {});
       router.replace(`/document-base/${c.id}/setup`);
     } catch (e: any) {
       setErr(e.message || "Could not create document base");
