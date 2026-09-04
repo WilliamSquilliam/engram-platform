@@ -51,12 +51,17 @@ json.dump(d, open(sys.argv[1], "w"), indent=2)' "$STATE_FILE" 2>/dev/null || rm 
 if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ZONE_ID:-}" ]; then
   cf_base="https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"
   for host in "${HOST_SERVE:-gpu.engramdynamics.org}" "${HOST_ONBOARD:-gpu-onboard.engramdynamics.org}"; do
-    rid="$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$cf_base?type=A&name=$host" \
-      | python3 -c 'import json,sys; r=json.load(sys.stdin).get("result") or []; print(r[0]["id"] if r else "")')"
+    # `|| true` + 2>/dev/null: an empty/non-JSON Cloudflare body must fall through to the
+    # manual-step WARN, not kill the script with a traceback (the instance is already
+    # terminated by this point, so every remaining line is best-effort cleanup).
+    rid="$(curl -s -m 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$cf_base?type=A&name=$host" \
+      | python3 -c 'import json,sys; r=json.load(sys.stdin).get("result") or []; print(r[0]["id"] if r else "")' 2>/dev/null || true)"
     if [ -n "$rid" ]; then
       curl -s -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$cf_base/$rid" >/dev/null \
         && log "deleted A record $host (dangling-DNS guard; launch.sh recreates it)" \
         || log "WARN: could not delete A record $host — remove it manually"
+    else
+      log "WARN: could not look up A record $host — verify/remove it manually (dangling-DNS risk)"
     fi
   done
 else
