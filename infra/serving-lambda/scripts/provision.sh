@@ -125,6 +125,14 @@ VLLM_TORCH_DTYPE=auto
 # pool (B200 / higher util) can raise it back.
 VLLM_ENFORCE_EAGER=0
 SERVE_SPEC=ngram
+# Structured reasoning: Command A+ thinks between <|START_THINKING|>/<|END_THINKING|>; the
+# server streams that span as 'thinking' frames so deliberation never lands in the answer
+# (prompt-side suppression demonstrably failed — the model quoted the instruction back).
+SERVE_REASONING=channel
+# Deterministic loop-breaker for greedy decoding: argmax over penalized logits; the spec-decode
+# verifier scores drafts under the same distribution, so ngram spec stays lossless. 1.0 disables.
+# Without it a thinking-channel repeat loop burns the whole budget and yields NO answer (seen live).
+SERVE_REP_PENALTY=1.05
 # --- ML-plane shared-token auth (enforced on every route except /health) ---
 ML_AUTH_TOKEN=$ML_AUTH_TOKEN
 # --- onboard THROUGH the engine: the engine is the only stack that can run this model class; the

@@ -134,6 +134,13 @@ SERVE_REASONING_CHANNEL = SERVE_REASONING == "channel"
 SERVE_THINK_EXTRA = int(os.environ.get("SERVE_THINK_EXTRA", "512"))
 _THINK_END = "<|END_THINKING|>"
 
+# Greedy decoding (temperature 0) has no defense against degenerate repeat loops; with the
+# thinking channel on, a loop burns the whole budget and the user gets NO answer (seen live:
+# multi-turn topic-shift turn looped "Let's read the second document" until cutoff). A mild
+# repetition penalty stays deterministic (argmax over penalized logits) and the spec-decode
+# verifier scores drafts under the same penalized distribution, so ngram spec stays lossless.
+SERVE_REP_PENALTY = float(os.environ.get("SERVE_REP_PENALTY", "1.0"))
+
 # ----- engine-side onboarding knobs (POST /onboard_cag; app.py proxies to it when ONBOARD_VIA_ENGINE
 # is set). This path builds one CAG cart per doc by harvesting the doc's prompt KV FROM the running
 # vLLM engine (the connector stages per-TP-rank shards keyed by cart_id), then merges + persists —
@@ -484,6 +491,8 @@ def _sampling(cart_ids, **kw):
     # normal stop either way). Applied here so every serve path (cart, rag, stream) agrees.
     if SERVE_REASONING_CHANNEL and "max_tokens" in kw and kw["max_tokens"]:
         kw["max_tokens"] = kw["max_tokens"] + SERVE_THINK_EXTRA
+    if SERVE_REP_PENALTY != 1.0:
+        kw.setdefault("repetition_penalty", SERVE_REP_PENALTY)
     return SamplingParams(temperature=0.0, **kw)
 
 
