@@ -148,6 +148,9 @@ ONBOARD_YIELD_S = float(os.environ.get("ONBOARD_YIELD_S", "1.0"))   # grace afte
 # stalled, one build proceeds anyway — chunked prefill keeps its interference to ~one scheduler
 # step, measured at no visible query-latency impact.
 ONBOARD_MAX_STALL_S = float(os.environ.get("ONBOARD_MAX_STALL_S", "30"))
+# Post-onboard cart prewarm (see onboard_cag_via_engine): 1-token query per cart so the user's
+# first chat lands on resident KV instead of paying every cart's first GPU load.
+ONBOARD_PREWARM = os.environ.get("ONBOARD_PREWARM", "1") == "1"
 _LIVE = {"active": 0, "last_done": 0.0}
 
 
@@ -1381,6 +1384,28 @@ async def onboard_cag_via_engine(corpus_dir: str, docs: list[dict], *, build_ind
                        + (f" ({n_skipped} reused)" if n_skipped else ""))
 
     await asyncio.gather(*(_one(d, ids) for d, ids in prepared))
+
+    # POST-ONBOARD CART PREWARM (fire-and-forget): the first REAL query otherwise pays each cart's
+    # first GPU load (local-mirror read + fp32 decode + scatter — seconds per cart; the S3 download
+    # is already write-through-cached by store.put). Warm EVERY cart with a 1-token query through
+    # the normal serve path so the user's first chat lands on resident KV. Runs after the response
+    # (the wizard flips ready immediately) and BEHIND the live-query yield gate, so it never
+    # competes with real traffic. Failure of any single warm is logged and skipped — pure optimization.
+    if ONBOARD_PREWARM and not canceled["v"]:
+        warm_ids = [d["doc_id"] for d in valid if d["doc_id"] not in errors]
+
+        async def _prewarm_carts() -> None:
+            n_ok = 0
+            for cid in warm_ids:
+                try:
+                    await _await_query_idle()
+                    await serve_query_async([cid], "Reply with one word: ready.", max_tokens=1)
+                    n_ok += 1
+                except Exception as exc:  # noqa: BLE001 — one cold cart must not stop the rest
+                    print(f"[onboard_cag] WARN prewarm skipped {cid!r}: {exc}", flush=True)
+            print(f"[onboard_cag] prewarmed {n_ok}/{len(warm_ids)} cart(s)", flush=True)
+
+        asyncio.get_running_loop().create_task(_prewarm_carts())
 
     n_built = n_done - n_skipped
     if canceled["v"]:

@@ -426,6 +426,43 @@ def _hybrid_rank(corpus_id: str, tenant_id: str, question: str, k: int) -> tuple
     return ids, idx.texts
 
 
+def retrieval_debug(corpus_id: str, question: str, k: int | None = None) -> dict:
+    """Full per-document ranking breakdown for one query — the prod-support view behind the
+    platform-admin debug endpoint. Runs the SAME cached-artifact pipeline as _hybrid_rank but
+    returns every signal per doc (lexical rank, dense rank + cosine, fused RRF score, bm25 score,
+    admitted or cut) instead of just the winners, so a "why did doc X not rank?" report is
+    answerable from evidence rather than re-derivation."""
+    k = k or config.INFERENCE_TOPK
+    tenant_id = _tenant_for_corpus(corpus_id)
+    idx = _corpus_index(corpus_id, tenant_id)
+    if not idx.doc_ids:
+        return {"query": question, "docs": [], "admitted": []}
+    lexical, bm25_scores = _lexical_rank_cached(question, idx)
+    dense = _dense_rank_cached(question, idx)
+    ranked_lists = [lexical] if dense is None else [lexical, dense[0]]
+    scored = rrf_fuse_scored(ranked_lists)
+    ordered = [d for d, _ in scored]
+    if config.RETRIEVAL_DYNAMIC_K == "on":
+        relevance = dense[1] if dense is not None else bm25_scores
+        admitted = dynamic_k(ordered, relevance, k, config.RETRIEVAL_DYNK_RATIO)
+    else:
+        admitted = ordered[:k]
+    by_id = {cart_id_for(tenant_id, fn): fn for fn in storage.list_doc_filenames(corpus_id)}
+    lex_rank = {d: r for r, d in enumerate(lexical)}
+    dense_rank = {d: r for r, d in enumerate(dense[0])} if dense is not None else {}
+    fused = dict(scored)
+    docs = [{
+        "doc_id": d, "filename": by_id.get(d),
+        "fused_rank": r, "fused_score": round(fused.get(d, 0.0), 5),
+        "lexical_rank": lex_rank.get(d), "bm25": round(bm25_scores.get(d, 0.0), 4),
+        "dense_rank": dense_rank.get(d),
+        "dense_cos": round(dense[1].get(d, 0.0), 4) if dense is not None else None,
+        "admitted": d in admitted,
+    } for r, d in enumerate(ordered)]
+    return {"query": question, "k": k, "dynamic_k": config.RETRIEVAL_DYNAMIC_K,
+            "dynk_ratio": config.RETRIEVAL_DYNK_RATIO, "docs": docs, "admitted": admitted}
+
+
 def invalidate_index(corpus_id: str) -> None:
     """Drop a corpus's cached index (called on corpus delete). Not strictly required for CORRECTNESS —
     the signature check rebuilds a stale index on the next query, and a deleted corpus is never queried
@@ -596,8 +633,22 @@ def served_texts_for(corpus_id: str, doc_ids: list[str]) -> dict[str, str]:
     return {d: idx.texts[d] for d in doc_ids}
 
 
+def _doc_title(corpus_id: str, fn: str | None, doc_id: str) -> str:
+    """Display title for one document: the FILENAME stem — the label the user chose and recognizes.
+    The old first-non-empty-line heuristic surfaced junk on real uploads (two docs both titled by
+    the author name they open with; a short note titled by its raw content — found live on UAT).
+    First line remains only as the fallback when the filename can't be resolved."""
+    if fn:
+        stem = fn.rsplit("/", 1)[-1]
+        stem = stem.rsplit(".", 1)[0] if "." in stem else stem
+        if stem.strip():
+            return stem.strip()[:140]
+    text = storage.read_text(corpus_id, fn) if fn else ""
+    return next((ln.strip() for ln in text.splitlines() if ln.strip()), doc_id)[:140]
+
+
 def doc_titles_for(corpus_id: str, doc_ids: list[str]) -> dict[str, str]:
-    """{cart_id: title} for the given doc_ids — title = the document's first non-empty line, capped at
+    """{cart_id: title} for the given doc_ids — title = the filename stem (see _doc_title), capped at
     120 chars (mirrors doc_sources' title logic). The engine's RESIDENT-QRC attribution turn names
     these titles; the control plane supplies them so the engine never derives a title. Unknown ids are
     simply absent from the result (the engine falls back to the id)."""
@@ -608,9 +659,7 @@ def doc_titles_for(corpus_id: str, doc_ids: list[str]) -> dict[str, str]:
         fn = by_id.get(d)
         if fn is None:
             continue
-        text = storage.read_text(corpus_id, fn)
-        title = next((ln.strip() for ln in text.splitlines() if ln.strip()), d)
-        out[d] = title[:120]
+        out[d] = _doc_title(corpus_id, fn, d)[:120]
     return out
 
 
@@ -624,15 +673,13 @@ def _doc_text(corpus_id: str, doc_id: str) -> str:
 
 
 def doc_sources(corpus_id: str, doc_ids: list[str]) -> list[dict]:
-    """[{id, title}] for the UI's Sources block — title = the document's first non-empty line
-    (our stored format puts the title there). Build the namespaced {cart_id: filename} map ONCE
-    (one tenant resolve, one dir listing) instead of re-scanning per id."""
+    """[{id, title}] for the UI's Sources block — title = the filename stem (see _doc_title).
+    Build the namespaced {cart_id: filename} map ONCE (one tenant resolve, one dir listing)
+    instead of re-scanning per id."""
     tenant_id = _tenant_for_corpus(corpus_id)
     by_id = {cart_id_for(tenant_id, fn): fn for fn in storage.list_doc_filenames(corpus_id)}
     out = []
     for d in doc_ids:
         fn = by_id.get(d)
-        text = storage.read_text(corpus_id, fn) if fn else ""
-        title = next((ln.strip() for ln in text.splitlines() if ln.strip()), d)
-        out.append({"id": d, "title": title[:140]})
+        out.append({"id": d, "title": _doc_title(corpus_id, fn, d)})
     return out

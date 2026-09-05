@@ -233,3 +233,17 @@ def platform_usage(
         n_tenants=len(tenants),
     )
     return PlatformUsageResp(tenants=rows, totals=totals)
+
+
+@router.get("/retrieval-debug")
+def retrieval_debug(corpus_id: str, q: str, k: int | None = None,
+                    _: User = Depends(require_platform_admin)):
+    """Per-document ranking breakdown for one query over one corpus (any tenant — this is the
+    cross-tenant prod-support view). Answers "why did doc X (not) rank?" with the actual signals:
+    lexical rank + bm25 score, dense rank + cosine, fused RRF order, and the dynamic-k admission
+    decision. Read-only; uses the same cached index the live chat path uses."""
+    from .. import retrieval
+    try:
+        return retrieval.retrieval_debug(corpus_id, q, k)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
