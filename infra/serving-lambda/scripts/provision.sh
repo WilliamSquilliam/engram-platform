@@ -149,6 +149,7 @@ SERVE_KV_DTYPE=fp8
 # the 0.9.0 wheel stopped shipping a data dir and builds then died on a PermissionError
 # (found live). Always point it at a writable path.
 CARTRIDGES_DATA_DIR=/home/ubuntu/engram/cartridges-data
+CARTRIDGES_RUNS_DIR=/home/ubuntu/engram/cartridges-data/runs
 # --- ML-plane shared-token auth (enforced on every route except /health) ---
 ML_AUTH_TOKEN=$ML_AUTH_TOKEN
 # --- onboard THROUGH the engine: the engine is the only stack that can run this model class; the
