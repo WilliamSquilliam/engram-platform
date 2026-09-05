@@ -37,10 +37,11 @@ VLLM_TP="${VLLM_TP:-1}"                    # 1 for a single B200; set 2 for the 
 # remapping would invalidate connector KV views). 64k covers real product prompts (top-k
 # carts + question + history is ~<32k); 131k returns with the B200 (more VRAM) or the
 # chunked per-layer cart decode (wheel backlog) that shrinks the transient ~64x.
-# 45056, not 65536: the gated config's graph capture reserves KV-pool memory and the
-# pool must still fit one max-length request (65536 needed 4.0GiB, 2.92GiB remained).
-# Max real k=3 request is ~8k tokens, so 45k is still ample headroom.
-CONTEXT_TOKENS="${CONTEXT_TOKENS:-45056}"
+# 40960 (was 45056, was 65536): the gated config's graph capture reserves KV-pool memory and the
+# pool must still fit one max-length request; and at 0.85 util a large cart's ~3GB fp32 decode
+# buffer no longer fit beside a 29-cart resident set (OOM -> blank-KV degrade, found live
+# 2026-09-05). Trimmed with the util drop below. Max real k=3 request is ~8k tokens — still ample.
+CONTEXT_TOKENS="${CONTEXT_TOKENS:-40960}"
 FS_NAME="${FS_NAME:-engram-fs}"
 HOST_SERVE="${HOST_SERVE:-gpu.engramdynamics.org}"
 HOST_ONBOARD="${HOST_ONBOARD:-gpu-onboard.engramdynamics.org}"
@@ -111,10 +112,14 @@ cat > "$STAGE/serving.env" <<ENV
 CARTRIDGES_MODEL=$CARTRIDGES_MODEL
 VLLM_TP=$VLLM_TP
 VLLM_MAX_MODEL_LEN=$CONTEXT_TOKENS
-# 0.85, NOT 0.90: each cart load/scatter needs a ~2GB-per-GPU transient fp32 decode
-# buffer OUTSIDE the vLLM pool. At 0.90 only ~1GB/GPU was free — cart loads OOM'd and
-# the connector degraded requests to blank KV (found live on the 2x H100 bench run).
-VLLM_GPU_MEM_UTIL=0.85
+# 0.82, NOT 0.90/0.85: each cart load/scatter needs a transient fp32 decode buffer OUTSIDE the
+# vLLM pool — ~2GB/GPU for typical carts, 3GB+ for large-document carts. At 0.90 only ~1GB/GPU
+# was free (bench run); at 0.85 a 29-cart tenant's large cart still OOM'd to blank-KV degrade
+# (live, 2026-09-05). 0.82 + the smaller CONTEXT_TOKENS keeps ~5GB/GPU free for loads. The REAL
+# fix is the wheel's chunked per-layer cart decode (backlog) which shrinks the transient ~64x.
+VLLM_GPU_MEM_UTIL=0.82
+# Fragmentation guard for the repeated big transient decode buffers (alloc/free per cart load).
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 VLLM_TORCH_DTYPE=auto
 # --- GATED engine config (adopted 2026-09-03, lossless gate passed: accuracy identical
 # 13/15 before/after; anchors remeasured — 3.6x qps at conc 1 tapering to 1.24x at 128).
