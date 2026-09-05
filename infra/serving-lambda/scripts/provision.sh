@@ -118,8 +118,9 @@ VLLM_MAX_MODEL_LEN=$CONTEXT_TOKENS
 # (live, 2026-09-05). 0.82 + the smaller CONTEXT_TOKENS keeps ~5GB/GPU free for loads. The REAL
 # fix is the wheel's chunked per-layer cart decode (backlog) which shrinks the transient ~64x.
 VLLM_GPU_MEM_UTIL=0.82
-# Fragmentation guard for the repeated big transient decode buffers (alloc/free per cart load).
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# NOTE: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is NOT safe here — vLLM refuses to start
+# it with a KV connector (VMM can remap KV cache pages, invalidating the connector's pinned
+# addresses; found live as a crash-loop 2026-09-05). Headroom comes from the util/ctx trims alone.
 VLLM_TORCH_DTYPE=auto
 # --- GATED engine config (adopted 2026-09-03, lossless gate passed: accuracy identical
 # 13/15 before/after; anchors remeasured — 3.6x qps at conc 1 tapering to 1.24x at 128).
