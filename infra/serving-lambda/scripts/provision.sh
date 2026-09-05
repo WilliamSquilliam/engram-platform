@@ -112,12 +112,13 @@ cat > "$STAGE/serving.env" <<ENV
 CARTRIDGES_MODEL=$CARTRIDGES_MODEL
 VLLM_TP=$VLLM_TP
 VLLM_MAX_MODEL_LEN=$CONTEXT_TOKENS
-# 0.82, NOT 0.90/0.85: each cart load/scatter needs a transient fp32 decode buffer OUTSIDE the
-# vLLM pool — ~2GB/GPU for typical carts, 3GB+ for large-document carts. At 0.90 only ~1GB/GPU
-# was free (bench run); at 0.85 a 29-cart tenant's large cart still OOM'd to blank-KV degrade
-# (live, 2026-09-05). 0.82 + the smaller CONTEXT_TOKENS keeps ~5GB/GPU free for loads. The REAL
-# fix is the wheel's chunked per-layer cart decode (backlog) which shrinks the transient ~64x.
-VLLM_GPU_MEM_UTIL=0.82
+# 0.85 is a HARD FLOOR on 2x H100 for this model: at 0.82 the whole KV pool collapses to
+# 1.13GiB/GPU and the engine refuses to start (won't fit one max-len request — measured live
+# 2026-09-05; the weights leave almost nothing, every util point is ~2.4GiB of pool). And 0.90
+# leaves too little FREE VRAM for cart-load fp32 decode transients (~2GB typical, 3GB+ for
+# large-document carts, which still degrade at 0.85). The escape from this squeeze is the
+# wheel's chunked per-layer cart decode (backlog): transient drops ~64x, then util can RISE.
+VLLM_GPU_MEM_UTIL=0.85
 # NOTE: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is NOT safe here — vLLM refuses to start
 # it with a KV connector (VMM can remap KV cache pages, invalidating the connector's pinned
 # addresses; found live as a crash-loop 2026-09-05). Headroom comes from the util/ctx trims alone.
