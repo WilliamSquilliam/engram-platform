@@ -111,10 +111,16 @@ def _install_wheel_stubs(monkeypatch, *, fail_ids=()):
     cart_mod.rope_theta_of = lambda cfg: 1_000_000.0 if cfg is not None else None
     cart_mod.rope_scaling_of = lambda cfg: None
 
-    # Parent packages must exist for the dotted import to resolve.
-    for name, mod in (("cartridges", types.ModuleType("cartridges")),
-                      ("cartridges.serve", types.ModuleType("cartridges.serve"))):
-        monkeypatch.setitem(sys.modules, name, sys.modules.get(name) or mod)
+    # Use the REAL cartridges.serve package (its request_helpers import vllm lazily, so the stub
+    # vllm above serves them) — an empty ModuleType here would break _sampling/_engine_build_kv,
+    # which now import cart_sampling_params/cart_build_params from it. Fall back to empty parents
+    # only if the wheel isn't installed at all.
+    try:
+        import cartridges.serve  # noqa: F401 — real package preferred
+    except ImportError:
+        for name, mod in (("cartridges", types.ModuleType("cartridges")),
+                          ("cartridges.serve", types.ModuleType("cartridges.serve"))):
+            monkeypatch.setitem(sys.modules, name, sys.modules.get(name) or mod)
     monkeypatch.setitem(sys.modules, "cartridges.serve.engine_onboard", eo)
     monkeypatch.setitem(sys.modules, "cartridges.cartridge", cart_mod)
     return collected

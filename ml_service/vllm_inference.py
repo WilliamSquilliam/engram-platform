@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import inspect
@@ -133,6 +134,47 @@ SERVE_REASONING = os.environ.get("SERVE_REASONING", "off").lower()
 SERVE_REASONING_CHANNEL = SERVE_REASONING == "channel"
 SERVE_THINK_EXTRA = int(os.environ.get("SERVE_THINK_EXTRA", "512"))
 _THINK_END = "<|END_THINKING|>"
+
+# ----- live-query priority over onboarding -------------------------------------------------
+# Cart builds share the engine's scheduler with live queries. Chunked prefill bounds how much any
+# ONE in-flight build can delay a query (~one 2048-token scheduler step), so priority is enforced
+# at the submission boundary: every serve path marks itself live (_live_query), and the onboard
+# loop stalls before each NEW build while queries are in flight or arrived within the grace
+# window — onboarding yields, then resumes when traffic quiets. Builds are idempotent per doc
+# (store.exists skip), so a stalled/killed onboard re-run picks up where it left off.
+ONBOARD_YIELD_S = float(os.environ.get("ONBOARD_YIELD_S", "1.0"))   # grace after last query; 0 disables
+# Anti-starvation bound: under CONSTANT query traffic the idle gate would never open (found live:
+# 115 queries at ~1 QPS starved a 16-doc onboard past its client timeout). After this many seconds
+# stalled, one build proceeds anyway — chunked prefill keeps its interference to ~one scheduler
+# step, measured at no visible query-latency impact.
+ONBOARD_MAX_STALL_S = float(os.environ.get("ONBOARD_MAX_STALL_S", "30"))
+_LIVE = {"active": 0, "last_done": 0.0}
+
+
+@contextlib.contextmanager
+def _live_query():
+    """Mark a live serve request for the onboard yield gate (sync — wraps the whole request)."""
+    _LIVE["active"] += 1
+    try:
+        yield
+    finally:
+        _LIVE["active"] -= 1
+        _LIVE["last_done"] = time.monotonic()
+
+
+async def _await_query_idle() -> float:
+    """Block until no live query is in flight AND none finished within ONBOARD_YIELD_S — or until
+    ONBOARD_MAX_STALL_S has passed (anti-starvation: sustained traffic must slow onboarding, not
+    stop it). Returns seconds stalled (0.0 when the gate was already open) for the onboard report."""
+    if ONBOARD_YIELD_S <= 0:
+        return 0.0
+    t0 = time.monotonic()
+    while _LIVE["active"] > 0 or (time.monotonic() - _LIVE["last_done"]) < ONBOARD_YIELD_S:
+        if ONBOARD_MAX_STALL_S > 0 and (time.monotonic() - t0) >= ONBOARD_MAX_STALL_S:
+            break
+        await asyncio.sleep(0.2)
+    return time.monotonic() - t0
+
 
 # Greedy decoding (temperature 0) has no defense against degenerate repeat loops; with the
 # thinking channel on, a loop burns the whole budget and the user gets NO answer (seen live:
@@ -977,10 +1019,11 @@ async def serve_query_async(doc_ids: list[str], question: str, max_tokens: int =
     final = None
     t0 = time.perf_counter()
     try:
-        async for out in st["engine"].generate(
-                _tokens_prompt(prompt),
-                _sampling(route, max_tokens=max_tokens), rid):
-            final = out
+        with _live_query():
+            async for out in st["engine"].generate(
+                    _tokens_prompt(prompt),
+                    _sampling(route, max_tokens=max_tokens), rid):
+                final = out
     finally:
         reg.pop(rid)
     degrade_reason = reg.pop_degraded(rid)
@@ -1009,10 +1052,11 @@ async def serve_rag_async(context: str, question: str, max_tokens: int = 64,
     rid = uuid.uuid4().hex
     final = None
     t0 = time.perf_counter()
-    async for out in st["engine"].generate(
-            _tokens_prompt(prompt_ids),
-            SamplingParams(temperature=0.0, max_tokens=max_tokens), rid):
-        final = out
+    with _live_query():
+        async for out in st["engine"].generate(
+                _tokens_prompt(prompt_ids),
+                SamplingParams(temperature=0.0, max_tokens=max_tokens), rid):
+            final = out
     wall_ms = round((time.perf_counter() - t0) * 1000.0, 1)
     ans = _strip_think(tok.decode(list(final.outputs[0].token_ids), skip_special_tokens=True))
     return {"answer": ans, "metrics": _req_metrics(final, wall_ms, len(prompt_ids), 0)}
@@ -1037,6 +1081,8 @@ async def _stream_generate(prompt_ids: list[int], cart_ids: list[str] | None, ma
     sent = 0          # chars of ANSWER text already emitted
     sent_think = 0    # chars of THINKING text already emitted (channel mode only)
     final = None
+    _lq = _live_query()   # manual enter/exit: the with-block can't span this generator's yields
+    _lq.__enter__()
     try:
         async for out in st["engine"].generate(
                 _tokens_prompt(prompt_ids),
@@ -1081,6 +1127,7 @@ async def _stream_generate(prompt_ids: list[int], cart_ids: list[str] | None, ma
                 yield f"data: {_json.dumps({'delta': text[sent:emit_to]})}\n\n"
                 sent = emit_to
     finally:
+        _lq.__exit__(None, None, None)
         if cart_ids:
             reg.pop(rid)
     # Did the connector serve this request over BLANK KV (cart failed to hydrate)? The reverse
@@ -1308,6 +1355,15 @@ async def onboard_cag_via_engine(corpus_dir: str, docs: list[dict], *, build_ind
         async with sem:
             if canceled["v"]:
                 return
+            # Live queries outrank onboarding: stall this build until traffic quiets (builds already
+            # in the scheduler finish — chunked prefill bounds their interference to ~one step).
+            stalled = await _await_query_idle()
+            if stalled > 1.0:
+                report(0.02 + 0.96 * min(n_done, n_valid) / max(n_valid, 1), None,
+                       f"Onboarding yielded {stalled:.0f}s to live queries")
+            if canceled["v"] or should_cancel():
+                canceled["v"] = True
+                return
             _bs = time.perf_counter()
             try:
                 await _engine_build_kv(cart_id, ids)
@@ -1416,6 +1472,7 @@ if _HAS_FASTAPI:
         return {"ok": True, "model": MODEL, "async": SERVE_ASYNC,
                 "engine_ready": bool(_astate if SERVE_ASYNC else _state),
                 "store": _store_extra().get("cart_store_backend"),
+                "live_queries": _LIVE["active"],   # onboard yield-gate observability
                 "knobs": _knob_state()}
 
     @app.get("/stats")
