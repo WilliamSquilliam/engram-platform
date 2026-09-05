@@ -370,6 +370,16 @@ def _build_index_texts(corpus_id: str, tenant_id: str,
         if not text.strip():
             continue
         cart_id = cart_id_for(tenant_id, fn)
+        # Same-stem files (report.docx + report.pdf) share one cart id. They must also share ONE
+        # index entry: a duplicate entry puts the id in every ranked list twice, and RRF then
+        # double-counts it — found live catapulting a doc with bm25 0 into the admitted top-k.
+        # Keep the variant with the longer extracted text (richer parse wins).
+        if cart_id in texts:
+            if len(text) <= len(texts[cart_id]):
+                continue
+            i = doc_ids.index(cart_id)
+            doc_ids.pop(i)
+            index_texts.pop(i)
         # Filename tokens help match queries that name the file; the description is a compact summary
         # the LLM wrote. Both are prepended so lexical + dense see them alongside the body.
         filename_terms = " ".join(_tokens(fn))
