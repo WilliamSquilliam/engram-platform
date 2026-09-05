@@ -39,6 +39,9 @@ load_env(){
     local key="${line%%=*}" val="${line#*=}"
     key="$(printf '%s' "$key" | tr -d '[:space:]')"
     [ -n "$key" ] || continue
+    # .env is CRLF on Windows; `read` keeps the \r, which then rides into URLs
+    # ("curl: (3) Malformed input" on every Cloudflare call — found live twice).
+    val="${val%$'\r'}"
     # Strip surrounding single/double quotes if present.
     val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
     export "$key=$val"
