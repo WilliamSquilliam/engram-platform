@@ -121,6 +121,13 @@ SERVE_SPEC_LOOKUP_MAX = int(os.environ.get("SERVE_SPEC_LOOKUP_MAX", "4"))
 # passes on that tier; until then eager stays the safe default everywhere.
 VLLM_ENFORCE_EAGER = os.environ.get("VLLM_ENFORCE_EAGER", "1") != "0"
 
+# SERVE_KV_DTYPE: vLLM kv_cache_dtype for the paged KV pool. "auto" (DEFAULT, UNCHANGED — the
+# cache matches the model's compute dtype, bf16) | "fp8"/"fp8_e4m3" (fp8_e4m3 KV cache -> ~2x the
+# tokens resident per GPU, so ~2x cart/context capacity). Carts STAY bf16 on disk; the connector
+# casts to fp8 at scatter time (default k_scale/v_scale=1.0), so this is purely an engine-pool
+# lever. Only flip to fp8 after the per-tier GPU conformance gate passes on that tier.
+SERVE_KV_DTYPE = os.environ.get("SERVE_KV_DTYPE", "auto")
+
 # SERVE_REASONING: "off" (DEFAULT — template renders a pre-closed thinking block) | "channel".
 # Command A+ is reasoning-tuned: with the channel suppressed it deliberates INSIDE the visible
 # answer ("The user asks... So answer: ... Must mention the document title.") — sometimes ALL of
@@ -334,6 +341,8 @@ def _build_engine() -> dict:
     spec = _spec_config()
     if spec is not None:
         kw["speculative_config"] = spec
+    if SERVE_KV_DTYPE != "auto":     # fp8 KV pool -> ~2x resident tokens; carts stay bf16 (cast at scatter)
+        kw["kv_cache_dtype"] = SERVE_KV_DTYPE
     llm = LLM(model=MODEL, dtype=TORCH_DTYPE, gpu_memory_utilization=GPU_MEM_UTIL,
               tensor_parallel_size=TENSOR_PARALLEL, max_model_len=MAX_MODEL_LEN,
               kv_transfer_config=ktc, **kw)
@@ -933,6 +942,8 @@ def _aget() -> dict:
     # FileNotFoundError). ray sidesteps that machinery entirely. Unset = vLLM's default.
     if os.environ.get("VLLM_EXECUTOR_BACKEND"):
         kw["distributed_executor_backend"] = os.environ["VLLM_EXECUTOR_BACKEND"].lower()
+    if SERVE_KV_DTYPE != "auto":     # fp8 KV pool -> ~2x resident tokens; carts stay bf16 (cast at scatter)
+        kw["kv_cache_dtype"] = SERVE_KV_DTYPE
     engine = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(
         model=MODEL, dtype=TORCH_DTYPE, gpu_memory_utilization=GPU_MEM_UTIL,
         tensor_parallel_size=TENSOR_PARALLEL, max_model_len=MAX_MODEL_LEN,

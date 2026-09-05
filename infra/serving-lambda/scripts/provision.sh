@@ -112,13 +112,11 @@ cat > "$STAGE/serving.env" <<ENV
 CARTRIDGES_MODEL=$CARTRIDGES_MODEL
 VLLM_TP=$VLLM_TP
 VLLM_MAX_MODEL_LEN=$CONTEXT_TOKENS
-# 0.85 is a HARD FLOOR on 2x H100 for this model: at 0.82 the whole KV pool collapses to
-# 1.13GiB/GPU and the engine refuses to start (won't fit one max-len request — measured live
-# 2026-09-05; the weights leave almost nothing, every util point is ~2.4GiB of pool). And 0.90
-# leaves too little FREE VRAM for cart-load fp32 decode transients (~2GB typical, 3GB+ for
-# large-document carts, which still degrade at 0.85). The escape from this squeeze is the
-# wheel's chunked per-layer cart decode (backlog): transient drops ~64x, then util can RISE.
-VLLM_GPU_MEM_UTIL=0.85
+# 0.88 with the wheel's chunked per-layer decode (0.9.0): the old whole-blob load transient
+# (~3GB/GPU) that forced util down to 0.85 is gone — peak load transient is now one layer
+# (~50MB), so utilization can spend that VRAM on the KV pool instead. 0.82 remains a hard
+# boot-failure floor (pool collapses below one max-len request, measured live 2026-09-05).
+VLLM_GPU_MEM_UTIL=0.88
 # NOTE: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is NOT safe here — vLLM refuses to start
 # it with a KV connector (VMM can remap KV cache pages, invalidating the connector's pinned
 # addresses; found live as a crash-loop 2026-09-05). Headroom comes from the util/ctx trims alone.
@@ -140,6 +138,13 @@ SERVE_REASONING=channel
 # verifier scores drafts under the same distribution, so ngram spec stays lossless. 1.0 disables.
 # Without it a thinking-channel repeat loop burns the whole budget and yields NO answer (seen live).
 SERVE_REP_PENALTY=1.05
+# FP8 paged KV cache: ~2x pool tokens (57k -> 97k at equal util; 191k with 0.88 above).
+# Gate-validated 2026-09-05: 8-question grounded compare vs bf16 showed no quality
+# regression and slightly better latency. Cart blobs stay bf16 in the store (the wheel
+# refuses cart BUILDS under an fp8 cache; onboarding runs before serve on this box, and
+# the engine-side onboard path harvests from the same engine — if onboarding ever fails
+# with the fp8-build refusal, onboard with SERVE_KV_DTYPE=auto then flip back).
+SERVE_KV_DTYPE=fp8
 # --- ML-plane shared-token auth (enforced on every route except /health) ---
 ML_AUTH_TOKEN=$ML_AUTH_TOKEN
 # --- onboard THROUGH the engine: the engine is the only stack that can run this model class; the
