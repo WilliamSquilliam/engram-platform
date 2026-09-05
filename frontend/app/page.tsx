@@ -121,8 +121,9 @@ function CorpusCard({ c, onDeleted }: { c: any; onDeleted: () => void }) {
         </div>
 
         <div className="text-xs text-slate-400">
+          {/* No cartridge count here: documents that dedupe to one cart made the numbers differ
+              (10 documents · 9 cartridges) and read as a failure. Documents are the user's unit. */}
           {c.n_documents} document{c.n_documents === 1 ? "" : "s"} · {c.source_type}
-          {c.n_cartridges ? ` · ${c.n_cartridges} cartridges` : ""}
         </div>
 
         {c.status === "training" && <ProgressBar indeterminate />}

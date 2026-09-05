@@ -1380,7 +1380,7 @@ async def onboard_cag_via_engine(corpus_dir: str, docs: list[dict], *, build_ind
                 n_done += 1
                 cart_build_s += time.perf_counter() - _bs
                 report(0.02 + 0.96 * min(n_done, n_valid) / max(n_valid, 1), None,
-                       f"Onboarded {n_done} cartridge(s)"
+                       f"Onboarded {n_done} document(s)"
                        + (f" ({n_skipped} reused)" if n_skipped else ""))
 
     await asyncio.gather(*(_one(d, ids) for d, ids in prepared))

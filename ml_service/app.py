@@ -882,7 +882,7 @@ def onboard_cag_corpus(corpus_dir, docs, report=None, build_index=False, should_
         cart_build_s += time.perf_counter() - _fs   # count only real forward+encode+upload work
         if report:
             report(0.02 + 0.96 * min(n, len(valid)) / max(len(valid), 1),
-                   detail=f"Onboarded {n} cartridge(s)"
+                   detail=f"Onboarded {n} document(s)"
                           + (f" ({n_skipped} reused)" if n_skipped else ""))
 
     def _canceled_result():
