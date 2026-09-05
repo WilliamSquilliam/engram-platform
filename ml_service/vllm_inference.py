@@ -461,39 +461,18 @@ def _compose_cart_prompt(tok, prefix: list[int], question: str,
     return prefix + chat_ids, len(chat_ids)
 
 
-_SP_HAS_EXTRA_ARGS: bool | None = None   # probed on first use (SamplingParams impl varies by vLLM)
-
-
 def _sampling(cart_ids, **kw):
-    """SamplingParams with cart routing embedded via extra_args['cartridge_cart_ids'].
-    vLLM 0.26 rewrites request ids before the scheduler (caller_rid -> 'rid-xxxxxxxx'),
-    so registry-by-rid alone goes silently cartless there (v026qual run 6); the request-
-    embedded channel survives any rid rewrite. Registry writes stay alongside for stacks
-    whose SamplingParams lacks extra_args (and as the ops/invalidation surface).
-
-    `cart_ids` is EITHER the legacy list[str] of cart ids (full-cart loads) OR the RESIDENT-QRC
-    dict-mode list [{cart_id, src_start, src_len, dest}] of span segments — the same two shapes the
-    registry accepts. Legacy ids are stringified (unchanged); dict entries pass through verbatim so
-    the connector reads the explicit source ranges + destination offsets."""
-    from vllm import SamplingParams  # local, like every vLLM import here (module loads GPU-free)
-    global _SP_HAS_EXTRA_ARGS
-    if _SP_HAS_EXTRA_ARGS is None:
-        try:
-            SamplingParams(extra_args=None)
-            _SP_HAS_EXTRA_ARGS = True
-        except TypeError:
-            _SP_HAS_EXTRA_ARGS = False
-    if cart_ids and _SP_HAS_EXTRA_ARGS:
-        embedded = cart_ids if isinstance(cart_ids[0], dict) else [str(c) for c in cart_ids]
-        kw["extra_args"] = {"cartridge_cart_ids": embedded}
-    # Channel mode: the thinking span consumes tokens BEFORE the answer starts — give it its own
-    # allowance so the caller's max_tokens still bounds the ANSWER (approximately; EOS is the
-    # normal stop either way). Applied here so every serve path (cart, rag, stream) agrees.
-    if SERVE_REASONING_CHANNEL and "max_tokens" in kw and kw["max_tokens"]:
-        kw["max_tokens"] = kw["max_tokens"] + SERVE_THINK_EXTRA
-    if SERVE_REP_PENALTY != 1.0:
-        kw.setdefault("repetition_penalty", SERVE_REP_PENALTY)
-    return SamplingParams(temperature=0.0, **kw)
+    """SamplingParams with cart routing embedded for the connector. Thin wrapper over the wheel's
+    cart_sampling_params (see cartridges/serve/request_helpers.py for the routing rationale: the
+    request-embedded extra_args channel survives vLLM 0.26's pre-scheduler rid rewrite, the reasoning
+    budget, and the greedy loop-breaker penalty). Name + signature kept so call sites are unchanged;
+    `cart_ids` is the legacy list[str] OR the resident-QRC span dict list, both passed through as-is."""
+    from cartridges.serve import cart_sampling_params  # local, like every vLLM-touching import here
+    return cart_sampling_params(
+        cart_ids,
+        repetition_penalty=SERVE_REP_PENALTY,
+        think_extra_tokens=SERVE_THINK_EXTRA if SERVE_REASONING_CHANNEL else 0,
+        **kw)
 
 
 # Cohere text-fencing markers (Command A/A+ family). They are ADDED tokens, not special
@@ -1242,9 +1221,8 @@ async def _engine_build_kv(cart_id: str, prompt_ids: list[int]) -> None:
     the request runs to completion so the KV is captured. Works on both engine shapes: the async
     engine yields RequestOutputs, the sync LLM.generate returns a list; both are driven off the
     threadpool by the caller for the sync path."""
-    from vllm import SamplingParams
-    sp = SamplingParams(max_tokens=1, temperature=0.0,
-                        extra_args={"cartridge_build_cart_id": cart_id})
+    from cartridges.serve import cart_build_params  # local, like every vLLM-touching import here
+    sp = cart_build_params(cart_id)
     st = _get_engine_state()
     if SERVE_ASYNC:
         rid = uuid.uuid4().hex

@@ -1,10 +1,11 @@
 """_sampling (vllm_inference): the cart-routing SamplingParams builder, GPU-free.
 
-vLLM is imported LAZILY inside functions in vllm_inference (the module must load in
-vLLM-less envs), so these tests stub sys.modules['vllm'] with both SamplingParams shapes
-— with and without extra_args — and verify: the routing dict lands under extra_args when
-supported, is omitted (not crashed on) when not, and the helper resolves SamplingParams
-at CALL time (v026qual run 7's selftest died on a module-scope NameError here)."""
+_sampling now delegates to the wheel's cartridges.serve.cart_sampling_params; these tests
+pin the platform-side behavior end to end (name/signature unchanged for call sites). vLLM is
+imported LAZILY inside functions (the module must load in vLLM-less envs), so these tests stub
+sys.modules['vllm'] with both SamplingParams shapes — with and without extra_args — and verify:
+the routing dict lands under extra_args when supported, is omitted (not crashed on) when not, and
+the helper resolves SamplingParams at CALL time (v026qual run 7's selftest died on a NameError here)."""
 from __future__ import annotations
 
 import importlib
@@ -34,9 +35,11 @@ def _vi_with_stub(monkeypatch, sp_cls):
     stub = types.ModuleType("vllm")
     stub.SamplingParams = sp_cls
     monkeypatch.setitem(sys.modules, "vllm", stub)
+    # The extra_args probe now lives (cached) in the wheel; clear it so it re-probes this stub.
+    from cartridges.serve import request_helpers
+    request_helpers.supports_extra_args.cache_clear()
     import vllm_inference
     V = importlib.reload(vllm_inference)
-    V._SP_HAS_EXTRA_ARGS = None   # re-probe against this stub
     return V
 
 
