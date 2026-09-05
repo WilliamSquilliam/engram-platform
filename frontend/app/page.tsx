@@ -63,7 +63,7 @@ export default function Dashboard() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">Your Document Bases</h1>
         <p className="text-sm text-slate-400">
-          Each document base is a knowledge base trained into composable KV cartridges.
+          Each document base is a knowledge base compiled into composable KV cartridges.
         </p>
       </div>
 

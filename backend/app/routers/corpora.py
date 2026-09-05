@@ -147,6 +147,10 @@ def delete_corpus(corpus_id: str, user: User = Depends(get_current_user), db: Se
 
     # DB + storage deletion first (existing behavior, unchanged order): once these commit the data is
     # gone from the control plane's own stores regardless of what the ML plane does next.
+    # ImportRun rows have a corpus FK but no ORM cascade (unlike documents/jobs/scale_runs), so
+    # they must go first or the corpus DELETE 500s on the FK — which surfaced to the browser as a
+    # CORS error and a delete button that "did nothing" (any corpus with a connector import).
+    db.query(ImportRun).filter(ImportRun.corpus_id == corpus.id).delete()
     db.delete(corpus)
     db.commit()
     storage.delete_corpus(corpus_id)
