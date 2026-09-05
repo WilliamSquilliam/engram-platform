@@ -65,13 +65,11 @@ locals {
     # convention — see the 2026-09-02 decisions-log entries). Requires the serving box
     # to run engram-cartridge >= 0.6.1 with CARTRIDGE_ROPE_CONVENTION set for the model.
     { name = "INFERENCE_TOPK", value = "3" },
-    # QRC hybrid, NOT resident: multi-cart KV composition (any cart at position 2+, span
-    # OR full) is invisible to the model on the current serving stack — found live
-    # 2026-09-05, reproduced across fp8/bf16, chunked/whole-blob, graphs/eager, spec
-    # on/off, wheel 0.8.0/0.9.0; only the top-1 cart serves. Hybrid carries docs 2..k as
-    # routed chunk TEXT (correct answers, ~1-2k extra prefill). Flip back to resident
-    # once the composition bug is root-caused and a span-dependent gate passes.
-    { name = "QRC_MODE", value = "hybrid" },
+    # Resident QRC restored 2026-09-05 (same day as the hybrid fallback): the position-2+
+    # invisibility was the multi-cart ROPE REBASE rotating keys out of the model's
+    # attendable band — fixed in wheel 9f7eb89 (rebase off by default; carts serve in
+    # their build-native position frame). Span-dependent gate cases (kv_gate 9-10) pass.
+    { name = "QRC_MODE", value = "resident" },
     { name = "ML_SERVICE_URL", value = local.ml_service_url },
     { name = "INFERENCE_SERVICE_URL", value = local.inference_service_url },
     { name = "MODEL_REGISTRY_JSON", value = local.model_registry_json },
