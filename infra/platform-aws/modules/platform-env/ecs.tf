@@ -65,11 +65,16 @@ locals {
     # convention — see the 2026-09-02 decisions-log entries). Requires the serving box
     # to run engram-cartridge >= 0.6.1 with CARTRIDGE_ROPE_CONVENTION set for the model.
     { name = "INFERENCE_TOPK", value = "3" },
-    # Resident QRC restored 2026-09-05 (same day as the hybrid fallback): the position-2+
-    # invisibility was the multi-cart ROPE REBASE rotating keys out of the model's
-    # attendable band — fixed in wheel 9f7eb89 (rebase off by default; carts serve in
-    # their build-native position frame). Span-dependent gate cases (kv_gate 9-10) pass.
-    { name = "QRC_MODE", value = "resident" },
+    # QRC hybrid (2026-09-05, second flip): multi-cart composition is NOT serving-correct
+    # on this model family in either rebase mode. Rebase ON: position-2+ carts invisible
+    # (likely corrupted keys — Cohere2 uses PARTIAL rotary (rotary_pct) and the rebase
+    # rotates the full head dim). Rebase OFF (wheel 9f7eb89): 2-cart no-history probes
+    # read, but 3 carts + chat history alias one position band and even top-1 answers
+    # degrade (seen live: topic-shift turn missed the top-1 cart's content). Hybrid
+    # (docs 2..k as routed chunk text) passed the full 4-turn happy path. Resident
+    # returns when the partial-rotary rebase lands in the wheel + kv_gate 9-10 AND a
+    # 3-cart-with-history chat gate pass.
+    { name = "QRC_MODE", value = "hybrid" },
     { name = "ML_SERVICE_URL", value = local.ml_service_url },
     { name = "INFERENCE_SERVICE_URL", value = local.inference_service_url },
     { name = "MODEL_REGISTRY_JSON", value = local.model_registry_json },
