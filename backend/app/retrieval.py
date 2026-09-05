@@ -17,6 +17,7 @@ of the app only depends on retrieve()/retrieve_context().
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -50,7 +51,14 @@ def doc_id_for(rel_path: str) -> str:
     DIFFERENT carts. Same tenant + same slug still collapses to one cart (cross-corpus dedup kept)."""
     name = Path(rel_path).name
     stem = rel_path[: -(len(name) - name.rfind("."))] if "." in name else rel_path
-    return re.sub(r"[^A-Za-z0-9]+", "_", stem).strip("_") or "doc"
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", stem).strip("_") or "doc"
+    # Cart ids cap at 128 chars and carry a 34-char tenant prefix, so the slug gets 94. A longer
+    # filename (real upload: a 100+ char bank-statement name) used to make cart_id_for RAISE and
+    # kill the whole onboard at "starting". Truncate + an 8-hex digest of the FULL slug keeps the
+    # id legal while distinct long names stay distinct.
+    if len(slug) > 94:
+        slug = f"{slug[:85]}_{hashlib.sha256(slug.encode()).hexdigest()[:8]}"
+    return slug
 
 
 def cart_id_for(tenant_id: str, rel_path: str) -> str:
