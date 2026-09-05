@@ -145,6 +145,10 @@ SERVE_REP_PENALTY=1.05
 # the engine-side onboard path harvests from the same engine — if onboarding ever fails
 # with the fp8-build refusal, onboard with SERVE_KV_DTYPE=auto then flip back).
 SERVE_KV_DTYPE=fp8
+# Wheel DATA_DIR default points INSIDE site-packages (root-owned; service runs as ubuntu) —
+# the 0.9.0 wheel stopped shipping a data dir and builds then died on a PermissionError
+# (found live). Always point it at a writable path.
+CARTRIDGES_DATA_DIR=/home/ubuntu/engram/cartridges-data
 # --- ML-plane shared-token auth (enforced on every route except /health) ---
 ML_AUTH_TOKEN=$ML_AUTH_TOKEN
 # --- onboard THROUGH the engine: the engine is the only stack that can run this model class; the
